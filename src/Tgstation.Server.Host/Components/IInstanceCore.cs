@@ -45,10 +45,25 @@ namespace Tgstation.Server.Host.Components
 		IConfiguration Configuration { get; }
 
 		/// <summary>
-		/// Change the <see cref="Api.Models.Instance.AutoUpdateInterval"/> for the <see cref="IInstanceCore"/>.
+		/// Change the auto-update timing for the <see cref="IInstanceCore"/>.
 		/// </summary>
-		/// <param name="newInterval">The new auto update inteval.</param>
+		/// <param name="newInterval">The new auto-update inteval.</param>
+		/// <param name="newCron">The new auto-update cron schedule.</param>
 		/// <returns>A <see cref="ValueTask"/> representing the running operation.</returns>
-		ValueTask SetAutoUpdateInterval(uint newInterval);
+		ValueTask ScheduleAutoUpdate(uint newInterval, string? newCron);
+
+		/// <summary>
+		/// Change the server auto-start timing for the <see cref="IInstanceCore"/>.
+		/// </summary>
+		/// <param name="newCron">The new auto-start cron schedule.</param>
+		/// <returns>A <see cref="ValueTask"/> representing the running operation.</returns>
+		ValueTask ScheduleServerStart(string? newCron);
+
+		/// <summary>
+		/// Change the server auto-stop timing for the <see cref="IInstanceCore"/>.
+		/// </summary>
+		/// <param name="newCron">The new auto-stop cron schedule.</param>
+		/// <returns>A <see cref="ValueTask"/> representing the running operation.</returns>
+		ValueTask ScheduleServerStop(string? newCron);
 	}
 }

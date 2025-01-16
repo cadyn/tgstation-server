@@ -5,7 +5,7 @@ using Tgstation.Server.Api.Models.Response;
 namespace Tgstation.Server.Host.Models
 {
 	/// <inheritdoc cref="Api.Models.Internal.DreamMakerSettings" />
-	public sealed class DreamMakerSettings : Api.Models.Internal.DreamMakerSettings, IApiTransformable<DreamMakerResponse>
+	public sealed class DreamMakerSettings : Api.Models.Internal.DreamMakerSettings, ILegacyApiTransformable<DreamMakerResponse>
 	{
 		/// <summary>
 		/// The row Id.
@@ -29,8 +29,12 @@ namespace Tgstation.Server.Host.Models
 			ProjectName = ProjectName,
 			ApiValidationPort = ApiValidationPort,
 			ApiValidationSecurityLevel = ApiValidationSecurityLevel,
-			RequireDMApiValidation = RequireDMApiValidation,
+#pragma warning disable CS0618 // Type or member is obsolete
+			RequireDMApiValidation = DMApiValidationMode == Api.Models.DMApiValidationMode.Required,
+#pragma warning restore CS0618 // Type or member is obsolete
+			DMApiValidationMode = DMApiValidationMode,
 			Timeout = Timeout,
+			CompilerAdditionalArguments = CompilerAdditionalArguments,
 		};
 	}
 }

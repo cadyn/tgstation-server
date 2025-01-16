@@ -13,11 +13,14 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
+using NCrontab;
+
 using Tgstation.Server.Api;
 using Tgstation.Server.Api.Models;
 using Tgstation.Server.Api.Models.Request;
 using Tgstation.Server.Api.Models.Response;
 using Tgstation.Server.Api.Rights;
+using Tgstation.Server.Common.Extensions;
 using Tgstation.Server.Host.Components;
 using Tgstation.Server.Host.Configuration;
 using Tgstation.Server.Host.Controllers.Results;
@@ -101,8 +104,8 @@ namespace Tgstation.Server.Host.Controllers
 			IInstanceManager instanceManager,
 			IJobManager jobManager,
 			IIOManager ioManager,
-			IPortAllocator portAllocator,
 			IPlatformIdentifier platformIdentifier,
+			IPortAllocator portAllocator,
 			IPermissionsUpdateNotifyee permissionsUpdateNotifyee,
 			IOptions<GeneralConfiguration> generalConfigurationOptions,
 			IOptions<SwarmConfiguration> swarmConfigurationOptions,
@@ -144,78 +147,56 @@ namespace Tgstation.Server.Host.Controllers
 			if (String.IsNullOrWhiteSpace(model.Name) || String.IsNullOrWhiteSpace(model.Path))
 				return BadRequest(new ErrorMessageResponse(ErrorCode.InstanceWhitespaceNameOrPath));
 
-			var unNormalizedPath = model.Path;
-			var targetInstancePath = NormalizePath(unNormalizedPath);
-			model.Path = targetInstancePath;
-
-			var installationDirectoryPath = NormalizePath(DefaultIOManager.CurrentDirectory);
-
-			bool InstanceIsChildOf(string otherPath)
-			{
-				if (!targetInstancePath.StartsWith(otherPath, StringComparison.Ordinal))
-					return false;
-
-				bool sameLength = targetInstancePath.Length == otherPath.Length;
-				char dirSeparatorChar = targetInstancePath.ToCharArray()[Math.Min(otherPath.Length, targetInstancePath.Length - 1)];
-				return sameLength
-					|| dirSeparatorChar == Path.DirectorySeparatorChar
-					|| dirSeparatorChar == Path.AltDirectorySeparatorChar;
-			}
-
-			if (InstanceIsChildOf(installationDirectoryPath))
-				return Conflict(new ErrorMessageResponse(ErrorCode.InstanceAtConflictingPath));
-
-			// Validate it's not a child of any other instance
-			IActionResult? earlyOut = null;
-			ulong countOfOtherInstances = 0;
-			using (var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken))
-			{
-				var newCancellationToken = cts.Token;
-				try
-				{
-					await DatabaseContext
-						.Instances
-						.AsQueryable()
-						.Where(x => x.SwarmIdentifer == swarmConfiguration.Identifier)
-						.Select(x => new Models.Instance
-						{
-							Path = x.Path,
-						})
-						.ForEachAsync(
-							otherInstance =>
-							{
-								if (++countOfOtherInstances >= generalConfiguration.InstanceLimit)
-									earlyOut ??= Conflict(new ErrorMessageResponse(ErrorCode.InstanceLimitReached));
-								else if (InstanceIsChildOf(otherInstance.Path!))
-									earlyOut ??= Conflict(new ErrorMessageResponse(ErrorCode.InstanceAtConflictingPath));
-
-								if (earlyOut != null && !newCancellationToken.IsCancellationRequested)
-									cts.Cancel();
-							},
-							newCancellationToken);
-				}
-				catch (OperationCanceledException)
-				{
-					cancellationToken.ThrowIfCancellationRequested();
-				}
-			}
-
+			IActionResult? earlyOut = ValidateCronSetting(model);
 			if (earlyOut != null)
 				return earlyOut;
 
+			var targetInstancePath = NormalizePath(model.Path!);
+			model.Path = targetInstancePath;
+
+			var installationDirectoryPath = DefaultIOManager.CurrentDirectory;
+			if (await ioManager.PathIsChildOf(installationDirectoryPath, targetInstancePath, cancellationToken))
+				return Conflict(new ErrorMessageResponse(ErrorCode.InstanceAtConflictingPath));
+
+			// Validate it's not a child of any other instance
+			var instancePaths = await DatabaseContext
+				.Instances
+				.AsQueryable()
+				.Where(x => x.SwarmIdentifer == swarmConfiguration.Identifier)
+				.Select(x => new Models.Instance
+				{
+					Path = x.Path,
+				})
+				.ToListAsync(cancellationToken);
+
+			if ((instancePaths.Count + 1) >= generalConfiguration.InstanceLimit)
+				return Conflict(new ErrorMessageResponse(ErrorCode.InstanceLimitReached));
+
+			var instancePathChecks = instancePaths
+				.Select(otherInstance => ioManager.PathIsChildOf(otherInstance.Path!, targetInstancePath, cancellationToken))
+				.ToArray();
+
+			await Task.WhenAll(instancePathChecks);
+
+			if (instancePathChecks.Any(task => task.Result))
+				return Conflict(new ErrorMessageResponse(ErrorCode.InstanceAtConflictingPath));
+
 			// Last test, ensure it's in the list of valid paths
-			if (!(generalConfiguration.ValidInstancePaths?
-				.Select(path => NormalizePath(path))
-				.Any(path => InstanceIsChildOf(path)) ?? true))
+			var pathChecks = generalConfiguration.ValidInstancePaths?
+				.Select(path => ioManager.PathIsChildOf(path, targetInstancePath, cancellationToken))
+				.ToArray()
+				?? Enumerable.Empty<Task<bool>>();
+			await Task.WhenAll(pathChecks);
+			if (!pathChecks.All(task => task.Result))
 				return BadRequest(new ErrorMessageResponse(ErrorCode.InstanceNotAtWhitelistedPath));
 
 			async ValueTask<bool> DirExistsAndIsNotEmpty()
 			{
-				if (!await ioManager.DirectoryExists(model.Path, cancellationToken))
+				if (!await ioManager.DirectoryExists(targetInstancePath, cancellationToken))
 					return false;
 
-				var filesTask = ioManager.GetFiles(model.Path, cancellationToken);
-				var dirsTask = ioManager.GetDirectories(model.Path, cancellationToken);
+				var filesTask = ioManager.GetFiles(targetInstancePath, cancellationToken);
+				var dirsTask = ioManager.GetDirectories(targetInstancePath, cancellationToken);
 
 				var files = await filesTask;
 				var dirs = await dirsTask;
@@ -225,8 +206,8 @@ namespace Tgstation.Server.Host.Controllers
 
 			var dirExistsTask = DirExistsAndIsNotEmpty();
 			bool attached = false;
-			if (await ioManager.FileExists(model.Path, cancellationToken) || await dirExistsTask)
-				if (!await ioManager.FileExists(ioManager.ConcatPath(model.Path, InstanceAttachFileName), cancellationToken))
+			if (await ioManager.FileExists(targetInstancePath, cancellationToken) || await dirExistsTask)
+				if (!await ioManager.FileExists(ioManager.ConcatPath(targetInstancePath, InstanceAttachFileName), cancellationToken))
 					return Conflict(new ErrorMessageResponse(ErrorCode.InstanceAtExistingPath));
 				else
 					attached = true;
@@ -243,7 +224,7 @@ namespace Tgstation.Server.Host.Controllers
 				try
 				{
 					// actually reserve it now
-					await ioManager.CreateDirectory(unNormalizedPath, cancellationToken);
+					await ioManager.CreateDirectory(targetInstancePath, cancellationToken);
 					await ioManager.DeleteFile(ioManager.ConcatPath(targetInstancePath, InstanceAttachFileName), cancellationToken);
 				}
 				catch
@@ -278,7 +259,7 @@ namespace Tgstation.Server.Host.Controllers
 
 			var api = newInstance.ToApi();
 			api.Accessible = true; // instances are always accessible by their creator
-			return attached ? Json(api) : Created(api);
+			return attached ? Json(api) : this.Created(api);
 		}
 
 		/// <summary>
@@ -305,8 +286,6 @@ namespace Tgstation.Server.Host.Controllers
 			if (originalModel.Online!.Value)
 				return Conflict(new ErrorMessageResponse(ErrorCode.InstanceDetachOnline));
 
-			DatabaseContext.Instances.Remove(originalModel);
-
 			var originalPath = originalModel.Path!;
 			var attachFileName = ioManager.ConcatPath(originalPath, InstanceAttachFileName);
 			try
@@ -321,7 +300,35 @@ namespace Tgstation.Server.Host.Controllers
 				throw;
 			}
 
-			await DatabaseContext.Save(cancellationToken); // cascades everything
+			try
+			{
+				// yes this is racy af. I hate it
+				// there's a bug where removing the root instance doesn't work sometimes
+				await DatabaseContext
+					.CompileJobs
+					.AsQueryable()
+					.Where(x => x.Job!.Instance!.Id == id)
+					.ExecuteDeleteAsync(cancellationToken);
+				await DatabaseContext
+					.RevInfoTestMerges
+					.AsQueryable()
+					.Where(x => x.RevisionInformation.InstanceId == id)
+					.ExecuteDeleteAsync(cancellationToken);
+				await DatabaseContext
+					.RevisionInformations
+					.AsQueryable()
+					.Where(x => x.InstanceId == id)
+					.ExecuteDeleteAsync(cancellationToken);
+
+				DatabaseContext.Instances.Remove(originalModel);
+				await DatabaseContext.Save(cancellationToken); // cascades everything else
+			}
+			catch
+			{
+				await ioManager.DeleteFile(attachFileName, CancellationToken.None); // DCT: Shouldn't be cancelled
+				throw;
+			}
+
 			return NoContent();
 		}
 
@@ -335,7 +342,15 @@ namespace Tgstation.Server.Host.Controllers
 		/// <response code="202">Instance updated successfully and relocation job created.</response>
 		/// <response code="410">The database entity for the requested instance could not be retrieved. The instance was likely detached.</response>
 		[HttpPost]
-		[TgsAuthorize(InstanceManagerRights.Relocate | InstanceManagerRights.Rename | InstanceManagerRights.SetAutoUpdate | InstanceManagerRights.SetConfiguration | InstanceManagerRights.SetOnline | InstanceManagerRights.SetChatBotLimit)]
+		[TgsAuthorize(
+			InstanceManagerRights.Relocate
+			| InstanceManagerRights.Rename
+			| InstanceManagerRights.SetAutoUpdate
+			| InstanceManagerRights.SetConfiguration
+			| InstanceManagerRights.SetOnline
+			| InstanceManagerRights.SetChatBotLimit
+			| InstanceManagerRights.SetAutoStart
+			| InstanceManagerRights.SetAutoStop)]
 		[ProducesResponseType(typeof(InstanceResponse), 200)]
 		[ProducesResponseType(typeof(InstanceResponse), 202)]
 		[ProducesResponseType(typeof(ErrorMessageResponse), 410)]
@@ -392,13 +407,13 @@ namespace Tgstation.Server.Host.Controllers
 			}
 
 			string? originalModelPath = null;
-			string? rawPath = null;
+			string? normalizedPath = null;
 			var originalOnline = originalModel.Online!.Value;
 			if (model.Path != null)
 			{
-				rawPath = NormalizePath(model.Path);
+				normalizedPath = NormalizePath(model.Path);
 
-				if (rawPath != originalModel.Path)
+				if (normalizedPath != originalModel.Path)
 				{
 					if (!userRights.HasFlag(InstanceManagerRights.Relocate))
 						return Forbid();
@@ -410,18 +425,35 @@ namespace Tgstation.Server.Host.Controllers
 						return Conflict(new ErrorMessageResponse(ErrorCode.InstanceAtExistingPath));
 
 					originalModelPath = originalModel.Path;
-					originalModel.Path = rawPath;
+					originalModel.Path = normalizedPath;
 				}
 			}
 
 			var oldAutoUpdateInterval = originalModel.AutoUpdateInterval!.Value;
+			var oldAutoUpdateCron = originalModel.AutoUpdateCron;
+			var oldAutoStartCron = originalModel.AutoStartCron;
+			var oldAutoStopCron = originalModel.AutoStopCron;
+
+			var earlyOut = ValidateCronSetting(model);
+			if (earlyOut != null)
+				return earlyOut;
+
+			var changedAutoUpdateInterval = model.AutoUpdateInterval.HasValue && oldAutoUpdateInterval != model.AutoUpdateInterval;
+			var changedAutoUpdateCron = model.AutoUpdateCron != null && oldAutoUpdateCron != model.AutoUpdateCron;
+
+			var changedAutoStart = model.AutoStartCron != null && oldAutoStartCron != model.AutoStartCron;
+			var changedAutoStop = model.AutoStopCron != null && oldAutoStopCron != model.AutoStopCron;
+
 			var renamed = model.Name != null && originalModel.Name != model.Name;
 
 			if (CheckModified(x => x.AutoUpdateInterval, InstanceManagerRights.SetAutoUpdate)
+				|| CheckModified(x => x.AutoUpdateCron, InstanceManagerRights.SetAutoUpdate)
 				|| CheckModified(x => x.ConfigurationType, InstanceManagerRights.SetConfiguration)
 				|| CheckModified(x => x.Name, InstanceManagerRights.Rename)
 				|| CheckModified(x => x.Online, InstanceManagerRights.SetOnline)
-				|| CheckModified(x => x.ChatBotLimit, InstanceManagerRights.SetChatBotLimit))
+				|| CheckModified(x => x.ChatBotLimit, InstanceManagerRights.SetChatBotLimit)
+				|| CheckModified(x => x.AutoStartCron, InstanceManagerRights.SetAutoStart)
+				|| CheckModified(x => x.AutoStopCron, InstanceManagerRights.SetAutoStop))
 				return Forbid();
 
 			if (model.ChatBotLimit.HasValue)
@@ -435,6 +467,11 @@ namespace Tgstation.Server.Host.Controllers
 				if (countOfExistingChatBots > model.ChatBotLimit.Value)
 					return Conflict(new ErrorMessageResponse(ErrorCode.ChatBotMax));
 			}
+
+			if (changedAutoUpdateCron)
+				model.AutoUpdateInterval = 0;
+			else if (changedAutoUpdateInterval)
+				model.AutoUpdateCron = String.Empty;
 
 			await DatabaseContext.Save(cancellationToken);
 
@@ -485,7 +522,7 @@ namespace Tgstation.Server.Host.Controllers
 			var moving = originalModelPath != null;
 			if (moving)
 			{
-				var description = $"Move instance ID {originalModel.Id} from {originalModelPath} to {rawPath}";
+				var description = $"Move instance ID {originalModel.Id} from {originalModelPath} to {normalizedPath}";
 				var job = Job.Create(JobCode.Move, AuthenticationContext.User, originalModel, InstanceManagerRights.Relocate);
 				job.Description = description;
 
@@ -497,13 +534,27 @@ namespace Tgstation.Server.Host.Controllers
 				api.MoveJob = job.ToApi();
 			}
 
-			if (model.AutoUpdateInterval.HasValue && oldAutoUpdateInterval != model.AutoUpdateInterval)
+			var changedAutoUpdate = changedAutoUpdateInterval || changedAutoUpdateCron;
+			if (changedAutoUpdate || changedAutoStart || changedAutoStop)
 			{
 				// ignoring retval because we don't care if it's offline
 				await WithComponentInstanceNullable(
 					async componentInstance =>
 					{
-						await componentInstance.SetAutoUpdateInterval(model.AutoUpdateInterval.Value);
+						var autoUpdateTask = changedAutoUpdate
+							? componentInstance.ScheduleAutoUpdate(model.AutoUpdateInterval!.Value, model.AutoUpdateCron)
+							: ValueTask.CompletedTask;
+
+						var autoStartTask = changedAutoStart
+							? componentInstance.ScheduleServerStart(model.AutoStartCron)
+							: ValueTask.CompletedTask;
+
+						var autoStopTask = changedAutoStop
+							? componentInstance.ScheduleServerStop(model.AutoStopCron)
+							: ValueTask.CompletedTask;
+
+						await ValueTaskExtensions.WhenAll(autoUpdateTask, autoStartTask, autoStopTask);
+
 						return null;
 					},
 					originalModel);
@@ -722,6 +773,7 @@ namespace Tgstation.Server.Host.Controllers
 					AllowWebClient = false,
 					AutoStart = false,
 					Port = ddPort,
+					OpenDreamTopicPort = 0,
 					SecurityLevel = DreamDaemonSecurity.Safe,
 					Visibility = DreamDaemonVisibility.Public,
 					StartupTimeout = 60,
@@ -738,15 +790,19 @@ namespace Tgstation.Server.Host.Controllers
 				{
 					ApiValidationPort = dmPort,
 					ApiValidationSecurityLevel = DreamDaemonSecurity.Safe,
-					RequireDMApiValidation = true,
+					DMApiValidationMode = DMApiValidationMode.Required,
 					Timeout = TimeSpan.FromHours(1),
+					CompilerAdditionalArguments = null,
 				},
 				Name = initialSettings.Name,
 				Online = false,
 				Path = initialSettings.Path,
 				AutoUpdateInterval = initialSettings.AutoUpdateInterval ?? 0,
+				AutoUpdateCron = initialSettings.AutoUpdateCron ?? String.Empty,
+				AutoStartCron = initialSettings.AutoStartCron ?? String.Empty,
+				AutoStopCron = initialSettings.AutoStopCron ?? String.Empty,
 				ChatBotLimit = initialSettings.ChatBotLimit ?? Models.Instance.DefaultChatBotLimit,
-				RepositorySettings = new RepositorySettings
+				RepositorySettings = new Models.RepositorySettings
 				{
 					CommitterEmail = Components.Repository.Repository.DefaultCommitterEmail,
 					CommitterName = Components.Repository.Repository.DefaultCommitterName,
@@ -800,8 +856,7 @@ namespace Tgstation.Server.Host.Controllers
 				return null;
 
 			path = ioManager.ResolvePath(path);
-			if (platformIdentifier.IsWindows)
-				path = path.ToUpperInvariant().Replace('\\', '/');
+			path = platformIdentifier.NormalizePath(path);
 
 			return path;
 		}
@@ -819,6 +874,32 @@ namespace Tgstation.Server.Host.Controllers
 				.AsQueryable()
 				.Where(x => x.InstanceId == instanceResponse.Id && x.PermissionSetId == AuthenticationContext.PermissionSet.Id)
 				.AnyAsync(cancellationToken);
+		}
+
+		/// <summary>
+		/// Validates a given <paramref name="instance"/>'s <see cref="Api.Models.Instance.AutoUpdateCron"/> setting.
+		/// </summary>
+		/// <param name="instance">The <see cref="Api.Models.Instance"/> to validate.</param>
+		/// <returns><see langword="null"/> if <paramref name="instance"/> has a valid <see cref="Api.Models.Instance.AutoUpdateCron"/> setting, a <see cref="BadRequestObjectResult"/> otherwise.</returns>
+		BadRequestObjectResult? ValidateCronSetting(Api.Models.Instance instance)
+		{
+			if (!String.IsNullOrWhiteSpace(instance.AutoUpdateCron))
+			{
+				if ((instance.AutoUpdateInterval.HasValue && instance.AutoUpdateInterval.Value != 0)
+				   || (CrontabSchedule.TryParse(
+					   instance.AutoUpdateCron,
+					   new CrontabSchedule.ParseOptions
+					   {
+						   IncludingSeconds = true,
+					   }) == null))
+					return BadRequest(new ErrorMessageResponse(ErrorCode.ModelValidationFailure));
+
+				instance.AutoUpdateInterval = 0;
+			}
+			else
+				instance.AutoUpdateCron = String.Empty;
+
+			return null;
 		}
 	}
 }

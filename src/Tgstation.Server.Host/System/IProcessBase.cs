@@ -1,4 +1,5 @@
-﻿using System.Threading;
+﻿using System;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace Tgstation.Server.Host.System
@@ -9,9 +10,19 @@ namespace Tgstation.Server.Host.System
 	public interface IProcessBase
 	{
 		/// <summary>
+		/// When the process was started.
+		/// </summary>
+		DateTimeOffset? LaunchTime { get; }
+
+		/// <summary>
 		/// The <see cref="Task{TResult}"/> resulting in the exit code of the process or <see langword="null"/> if the process was detached.
 		/// </summary>
 		Task<int?> Lifetime { get; }
+
+		/// <summary>
+		/// Gets the process' memory usage in bytes.
+		/// </summary>
+		long? MemoryUsage { get; }
 
 		/// <summary>
 		/// Set's the owned <see cref="global::System.Diagnostics.Process.PriorityClass"/> to a non-normal value.

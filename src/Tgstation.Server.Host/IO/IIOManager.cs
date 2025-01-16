@@ -46,6 +46,15 @@ namespace Tgstation.Server.Host.IO
 		bool PathContainsParentAccess(string path);
 
 		/// <summary>
+		/// Check if a given <paramref name="parentPath"/> is a parent of a given <paramref name="parentPath"/>.
+		/// </summary>
+		/// <param name="parentPath">The parent path.</param>
+		/// <param name="childPath">The child path.</param>
+		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
+		/// <returns>A <see cref="Task{TResult}"/> resulting in <see langword="true"/> if <paramref name="childPath"/> is a child of <paramref name="parentPath"/> or they are equivalent.</returns>
+		Task<bool> PathIsChildOf(string parentPath, string childPath, CancellationToken cancellationToken);
+
+		/// <summary>
 		/// Copies a directory from <paramref name="src"/> to <paramref name="dest"/>.
 		/// </summary>
 		/// <param name="ignore">Files and folders to ignore at the root level.</param>
@@ -68,7 +77,7 @@ namespace Tgstation.Server.Host.IO
 		/// </summary>
 		/// <param name="path">The file to check for existence.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
-		/// <returns>A <see cref="Task"/> resulting in <see langword="true"/> if the file at <paramref name="path"/> exists, <see langword="false"/> otherwise.</returns>
+		/// <returns>A <see cref="Task{TResult}"/> resulting in <see langword="true"/> if the file at <paramref name="path"/> exists, <see langword="false"/> otherwise.</returns>
 		Task<bool> FileExists(string path, CancellationToken cancellationToken);
 
 		/// <summary>
@@ -85,6 +94,7 @@ namespace Tgstation.Server.Host.IO
 		/// <param name="path">The path of the file to read.</param>
 		/// <param name="cancellationToken">A <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask"/> that results in the contents of a file at <paramref name="path"/>.</returns>
+		/// <remarks>This function will fail to read files from the /proc filesystem on Linux.</remarks>
 		ValueTask<byte[]> ReadAllBytes(string path, CancellationToken cancellationToken);
 
 		/// <summary>
@@ -109,6 +119,13 @@ namespace Tgstation.Server.Host.IO
 		/// <param name="path">The path of the file to write, will be truncated.</param>
 		/// <returns>The open <see cref="FileStream"/>.</returns>
 		FileStream CreateAsyncSequentialWriteStream(string path);
+
+		/// <summary>
+		/// Creates an asynchronous <see cref="FileStream"/> for sequential reading.
+		/// </summary>
+		/// <param name="path">The path of the file to write, will be truncated.</param>
+		/// <returns>The open <see cref="FileStream"/>.</returns>
+		FileStream CreateAsyncSequentialReadStream(string path);
 
 		/// <summary>
 		/// Writes some <paramref name="contents"/> to a file at <paramref name="path"/> overwriting previous content.

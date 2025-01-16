@@ -8,6 +8,7 @@ using Octokit;
 
 using Tgstation.Server.Api.Models;
 using Tgstation.Server.Host.Configuration;
+using Tgstation.Server.Host.Extensions;
 using Tgstation.Server.Host.Utils.GitHub;
 
 namespace Tgstation.Server.Host.Security.OAuth
@@ -19,6 +20,9 @@ namespace Tgstation.Server.Host.Security.OAuth
 	{
 		/// <inheritdoc />
 		public OAuthProvider Provider => OAuthProvider.GitHub;
+
+		/// <inheritdoc />
+		public OAuthGatewayStatus GatewayStatus => oAuthConfiguration.Gateway ?? default;
 
 		/// <summary>
 		/// The <see cref="IGitHubServiceFactory"/> for the <see cref="GitHubOAuthValidator"/>.
@@ -52,7 +56,7 @@ namespace Tgstation.Server.Host.Security.OAuth
 		}
 
 		/// <inheritdoc />
-		public async ValueTask<string?> ValidateResponseCode(string code, CancellationToken cancellationToken)
+		public async ValueTask<(string? UserID, string AccessCode)?> ValidateResponseCode(string code, bool requireUserID, CancellationToken cancellationToken)
 		{
 			ArgumentNullException.ThrowIfNull(code);
 
@@ -60,17 +64,20 @@ namespace Tgstation.Server.Host.Security.OAuth
 			{
 				logger.LogTrace("Validating response code...");
 
-				var gitHubService = gitHubServiceFactory.CreateService();
+				var gitHubService = await gitHubServiceFactory.CreateService(cancellationToken);
 				var token = await gitHubService.CreateOAuthAccessToken(oAuthConfiguration, code, cancellationToken);
 				if (token == null)
 					return null;
 
-				var authenticatedClient = gitHubServiceFactory.CreateService(token);
+				if (!requireUserID)
+					return (null, AccessCode: token);
+
+				var authenticatedClient = await gitHubServiceFactory.CreateService(token, cancellationToken);
 
 				logger.LogTrace("Getting user details...");
 				var userId = await authenticatedClient.GetCurrentUserId(cancellationToken);
 
-				return userId.ToString(CultureInfo.InvariantCulture);
+				return (userId.ToString(CultureInfo.InvariantCulture), AccessCode: token);
 			}
 			catch (RateLimitExceededException)
 			{
@@ -89,6 +96,7 @@ namespace Tgstation.Server.Host.Security.OAuth
 			{
 				ClientId = oAuthConfiguration.ClientId,
 				RedirectUri = oAuthConfiguration.RedirectUrl,
+				GatewayOnly = GatewayStatus.ToBoolean(),
 			};
 	}
 }

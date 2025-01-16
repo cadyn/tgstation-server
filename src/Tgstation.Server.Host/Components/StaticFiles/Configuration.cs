@@ -140,9 +140,9 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 		readonly SemaphoreSlim semaphore;
 
 		/// <summary>
-		/// The <see cref="CancellationTokenSource"/> that is triggered when <see cref="IDisposable.Dispose"/> is called.
+		/// The <see cref="CancellationTokenSource"/> that is triggered when <see cref="StopAsync(CancellationToken)"/> is called.
 		/// </summary>
-		readonly CancellationTokenSource disposeCts;
+		readonly CancellationTokenSource stoppingCts;
 
 		/// <summary>
 		/// The culmination of all upload file transfer callbacks.
@@ -185,8 +185,8 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 			this.generalConfiguration = generalConfiguration ?? throw new ArgumentNullException(nameof(generalConfiguration));
 			this.sessionConfiguration = sessionConfiguration ?? throw new ArgumentNullException(nameof(sessionConfiguration));
 
-			semaphore = new SemaphoreSlim(1);
-			disposeCts = new CancellationTokenSource();
+			semaphore = new SemaphoreSlim(1, 1);
+			stoppingCts = new CancellationTokenSource();
 			uploadTasks = Task.CompletedTask;
 		}
 
@@ -194,14 +194,13 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 		public void Dispose()
 		{
 			semaphore.Dispose();
-			disposeCts.Cancel();
-			disposeCts.Dispose();
+			stoppingCts.Dispose();
 		}
 
 		/// <inheritdoc />
 		public async ValueTask<ServerSideModifications?> CopyDMFilesTo(string dmeFile, string destination, CancellationToken cancellationToken)
 		{
-			using (await SemaphoreSlimContext.Lock(semaphore, cancellationToken))
+			using (await SemaphoreSlimContext.Lock(semaphore, cancellationToken, logger))
 			{
 				var ensureDirectoriesTask = EnsureDirectories(cancellationToken);
 
@@ -270,7 +269,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 				}));
 			}
 
-			using (SemaphoreSlimContext.TryLock(semaphore, out var locked))
+			using (SemaphoreSlimContext.TryLock(semaphore, logger, out var locked))
 			{
 				if (!locked)
 				{
@@ -310,7 +309,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 
 					var originalSha = GetFileSha();
 
-					var disposeToken = disposeCts.Token;
+					var disposeToken = stoppingCts.Token;
 					var fileTicket = fileTransferService.CreateDownload(
 						new FileDownloadProvider(
 							() =>
@@ -376,7 +375,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 				}
 			}
 
-			using (SemaphoreSlimContext.TryLock(semaphore, out var locked))
+			using (SemaphoreSlimContext.TryLock(semaphore, logger, out var locked))
 			{
 				if (!locked)
 				{
@@ -434,7 +433,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 				}));
 			}
 
-			using (await SemaphoreSlimContext.Lock(semaphore, cancellationToken))
+			using (await SemaphoreSlimContext.Lock(semaphore, cancellationToken, logger))
 			{
 				await EnsureDirectories(cancellationToken);
 				var ignoreFileBytes = await ioManager.ReadAllBytes(StaticIgnorePath(), cancellationToken);
@@ -463,6 +462,8 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 			await EnsureDirectories(cancellationToken);
 			var path = ValidateConfigRelativePath(configurationRelativePath);
 
+			logger.LogTrace("Starting write to {path}", path);
+
 			ConfigurationFileResponse? result = null;
 
 			void WriteImpl()
@@ -470,20 +471,27 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 				try
 				{
 					var fileTicket = fileTransferService.CreateUpload(FileUploadStreamKind.ForSynchronousIO);
-					var uploadCancellationToken = disposeCts.Token;
+					var uploadCancellationToken = stoppingCts.Token;
 					async Task UploadHandler()
 					{
 						await using (fileTicket)
 						{
 							var fileHash = previousHash;
+							logger.LogTrace("Write to {path} waiting for upload stream", path);
 							var uploadStream = await fileTicket.GetResult(uploadCancellationToken);
 							if (uploadStream == null)
+							{
+								logger.LogTrace("Write to {path} expired", path);
 								return; // expired
+							}
 
+							logger.LogTrace("Write to {path} received stream of length {length}...", path, uploadStream.Length);
 							bool success = false;
 							void WriteCallback()
 							{
-								success = synchronousIOManager.WriteFileChecked(path, uploadStream, ref fileHash, cancellationToken);
+								logger.LogTrace("Running synchronous write...");
+								success = synchronousIOManager.WriteFileChecked(path, uploadStream, ref fileHash, uploadCancellationToken);
+								logger.LogTrace("Finished write {un}successfully!", success ? String.Empty : "un");
 							}
 
 							if (fileTicket == null)
@@ -492,7 +500,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 								return;
 							}
 
-							using (SemaphoreSlimContext.TryLock(semaphore, out var locked))
+							using (SemaphoreSlimContext.TryLock(semaphore, logger, out var locked))
 							{
 								if (!locked)
 								{
@@ -500,16 +508,19 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 									return;
 								}
 
+								logger.LogTrace("Kicking off write callback");
 								if (systemIdentity == null)
-									await Task.Factory.StartNew(WriteCallback, cancellationToken, DefaultIOManager.BlockingTaskCreationOptions, TaskScheduler.Current);
+									await Task.Factory.StartNew(WriteCallback, uploadCancellationToken, DefaultIOManager.BlockingTaskCreationOptions, TaskScheduler.Current);
 								else
-									await systemIdentity.RunImpersonated(WriteCallback, cancellationToken);
+									await systemIdentity.RunImpersonated(WriteCallback, uploadCancellationToken);
 							}
 
 							if (!success)
 								fileTicket.SetError(ErrorCode.ConfigurationFileUpdated, fileHash);
 							else if (uploadStream.Length > 0)
 								postWriteHandler.HandleWrite(path);
+							else
+								logger.LogTrace("Write complete");
 						}
 					}
 
@@ -522,8 +533,24 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 						Path = configurationRelativePath,
 					};
 
-					lock (disposeCts)
-						uploadTasks = Task.WhenAll(uploadTasks, UploadHandler());
+					lock (stoppingCts)
+					{
+						async Task ChainUploadTasks()
+						{
+							var oldUploadTask = uploadTasks;
+							var newUploadTask = UploadHandler();
+							try
+							{
+								await oldUploadTask;
+							}
+							finally
+							{
+								await newUploadTask;
+							}
+						}
+
+						uploadTasks = ChainUploadTasks();
+					}
 				}
 				catch (UnauthorizedAccessException)
 				{
@@ -550,7 +577,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 				}
 			}
 
-			using (SemaphoreSlimContext.TryLock(semaphore, out var locked))
+			using (SemaphoreSlimContext.TryLock(semaphore, logger, out var locked))
 			{
 				if (!locked)
 				{
@@ -576,7 +603,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 			bool? result = null;
 			void DoCreate() => result = synchronousIOManager.CreateDirectory(path, cancellationToken);
 
-			using (SemaphoreSlimContext.TryLock(semaphore, out var locked))
+			using (SemaphoreSlimContext.TryLock(semaphore, logger, out var locked))
 			{
 				if (!locked)
 				{
@@ -597,7 +624,24 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 		public Task StartAsync(CancellationToken cancellationToken) => EnsureDirectories(cancellationToken);
 
 		/// <inheritdoc />
-		public Task StopAsync(CancellationToken cancellationToken) => EnsureDirectories(cancellationToken);
+		public async Task StopAsync(CancellationToken cancellationToken)
+		{
+			await EnsureDirectories(cancellationToken);
+
+			stoppingCts.Cancel();
+			try
+			{
+				await uploadTasks;
+			}
+			catch (OperationCanceledException ex)
+			{
+				logger.LogDebug(ex, "One or more uploads/downloads were aborted!");
+			}
+			catch (Exception ex)
+			{
+				logger.LogError(ex, "Error awaiting upload tasks!");
+			}
+		}
 
 		/// <inheritdoc />
 		public ValueTask HandleEvent(EventType eventType, IEnumerable<string?> parameters, bool deploymentPipeline, CancellationToken cancellationToken)
@@ -642,7 +686,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 			var path = ValidateConfigRelativePath(configurationRelativePath);
 
 			var result = false;
-			using (SemaphoreSlimContext.TryLock(semaphore, out var locked))
+			using (SemaphoreSlimContext.TryLock(semaphore, logger, out var locked))
 			{
 				if (!locked)
 				{
@@ -741,29 +785,50 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 			await EnsureDirectories(cancellationToken);
 
 			// always execute in serial
-			using (await SemaphoreSlimContext.Lock(semaphore, cancellationToken))
+			using (await SemaphoreSlimContext.Lock(semaphore, cancellationToken, logger))
 			{
-				var files = await ioManager.GetFilesWithExtension(EventScriptsSubdirectory, platformIdentifier.ScriptFileExtension, false, cancellationToken);
-				var resolvedScriptsDir = ioManager.ResolvePath(EventScriptsSubdirectory);
+				var directories = generalConfiguration.AdditionalEventScriptsDirectories?.ToList() ?? new List<string>();
+				directories.Add(EventScriptsSubdirectory);
 
-				var scriptFiles = files
-					.Select(x => ioManager.GetFileName(x))
-					.Where(x => scriptNames.Any(
-						scriptName => x.StartsWith(scriptName, StringComparison.Ordinal)))
+				var allScripts = new List<string>();
+				var tasks = directories.Select<string, ValueTask>(
+					async scriptDirectory =>
+					{
+						var resolvedScriptsDir = ioManager.ResolvePath(scriptDirectory);
+						logger.LogTrace("Checking for scripts in {directory}...", scriptDirectory);
+						var files = await ioManager.GetFilesWithExtension(scriptDirectory, platformIdentifier.ScriptFileExtension, false, cancellationToken);
+
+						var scriptFiles = files
+							.Select(ioManager.GetFileName)
+							.Where(x => scriptNames.Any(
+								scriptName => x.StartsWith(scriptName, StringComparison.Ordinal)))
+							.Select(x =>
+							{
+								var fullScriptPath = ioManager.ConcatPath(resolvedScriptsDir, x);
+								logger.LogTrace("Found matching script: {scriptPath}", fullScriptPath);
+								return fullScriptPath;
+							});
+
+						lock (allScripts)
+							allScripts.AddRange(scriptFiles);
+					})
 					.ToList();
 
-				if (scriptFiles.Count == 0)
+				await ValueTaskExtensions.WhenAll(tasks);
+				if (allScripts.Count == 0)
 				{
 					logger.LogTrace("No event scripts starting with \"{scriptName}\" detected", String.Join("\" or \"", scriptNames));
 					return;
 				}
 
-				foreach (var scriptFile in scriptFiles)
+				var resolvedInstanceScriptsDir = ioManager.ResolvePath(EventScriptsSubdirectory);
+
+				foreach (var scriptFile in allScripts.OrderBy(ioManager.GetFileName))
 				{
 					logger.LogTrace("Running event script {scriptFile}...", scriptFile);
-					await using (var script = processExecutor.LaunchProcess(
-						ioManager.ConcatPath(resolvedScriptsDir, scriptFile),
-						resolvedScriptsDir,
+					await using (var script = await processExecutor.LaunchProcess(
+						scriptFile,
+						resolvedInstanceScriptsDir,
 						String.Join(
 							' ',
 							parameters.Select(arg =>
@@ -778,6 +843,7 @@ namespace Tgstation.Server.Host.Components.StaticFiles
 
 								return $"\"{arg}\"";
 							})),
+						cancellationToken,
 						readStandardHandles: true,
 						noShellExecute: true))
 					using (cancellationToken.Register(() => script.Terminate()))

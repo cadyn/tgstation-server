@@ -8,6 +8,10 @@ using Cyberboss.AspNetCore.AsyncInitializer;
 
 using Elastic.CommonSchema.Serilog;
 
+using HotChocolate.AspNetCore;
+using HotChocolate.Subscriptions;
+using HotChocolate.Types;
+
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Builder;
@@ -35,6 +39,8 @@ using Tgstation.Server.Api;
 using Tgstation.Server.Api.Hubs;
 using Tgstation.Server.Api.Models;
 using Tgstation.Server.Common.Http;
+using Tgstation.Server.Host.Authority;
+using Tgstation.Server.Host.Authority.Core;
 using Tgstation.Server.Host.Components;
 using Tgstation.Server.Host.Components.Chat;
 using Tgstation.Server.Host.Components.Deployment.Remote;
@@ -50,7 +56,11 @@ using Tgstation.Server.Host.Controllers;
 using Tgstation.Server.Host.Controllers.Results;
 using Tgstation.Server.Host.Database;
 using Tgstation.Server.Host.Extensions;
-using Tgstation.Server.Host.Extensions.Converters;
+using Tgstation.Server.Host.GraphQL;
+using Tgstation.Server.Host.GraphQL.Interceptors;
+using Tgstation.Server.Host.GraphQL.Scalars;
+using Tgstation.Server.Host.GraphQL.Subscriptions;
+using Tgstation.Server.Host.GraphQL.Types;
 using Tgstation.Server.Host.IO;
 using Tgstation.Server.Host.Jobs;
 using Tgstation.Server.Host.Properties;
@@ -61,6 +71,7 @@ using Tgstation.Server.Host.Swarm;
 using Tgstation.Server.Host.System;
 using Tgstation.Server.Host.Transfer;
 using Tgstation.Server.Host.Utils;
+using Tgstation.Server.Shared;
 
 namespace Tgstation.Server.Host.Core
 {
@@ -143,6 +154,7 @@ namespace Tgstation.Server.Host.Core
 			services.UseStandardConfig<ControlPanelConfiguration>(Configuration);
 			services.UseStandardConfig<SwarmConfiguration>(Configuration);
 			services.UseStandardConfig<SessionConfiguration>(Configuration);
+			services.UseStandardConfig<TelemetryConfiguration>(Configuration);
 
 			// enable options which give us config reloading
 			services.AddOptions();
@@ -282,6 +294,59 @@ namespace Tgstation.Server.Host.Core
 			services.AddHttpClient();
 			services.AddSingleton<IAbstractHttpClientFactory, AbstractHttpClientFactory>();
 
+			// configure graphql
+			services
+				.AddScoped<GraphQL.Subscriptions.ITopicEventReceiver, ShutdownAwareTopicEventReceiver>()
+				.AddGraphQLServer()
+				.AddAuthorization(
+					options => options.AddPolicy(
+						TgsAuthorizeAttribute.PolicyName,
+						builder => builder.RequireRole(TgsAuthorizeAttribute.UserEnabledRole)))
+				.ModifyOptions(options =>
+				{
+					options.EnsureAllNodesCanBeResolved = true;
+					options.EnableFlagEnums = true;
+				})
+#if DEBUG
+				.ModifyCostOptions(options =>
+				{
+					options.EnforceCostLimits = false;
+				})
+#endif
+				.AddMutationConventions()
+				.AddInMemorySubscriptions(
+					new SubscriptionOptions
+					{
+						TopicBufferCapacity = 1024, // mainly so high for tests, not possible to DoS the server without authentication and some other access to generate messages
+					})
+				.AddGlobalObjectIdentification()
+				.AddQueryFieldToMutationPayloads()
+				.ModifyOptions(options =>
+				{
+					options.EnableDefer = true;
+				})
+				.ModifyPagingOptions(pagingOptions =>
+				{
+					pagingOptions.IncludeTotalCount = true;
+					pagingOptions.RequirePagingBoundaries = false;
+					pagingOptions.DefaultPageSize = ApiController.DefaultPageSize;
+					pagingOptions.MaxPageSize = ApiController.MaximumPageSize;
+				})
+				.AddFiltering()
+				.AddSorting()
+				.AddHostTypes()
+				.AddErrorFilter<ErrorMessageFilter>()
+				.AddType<StandaloneNode>()
+				.AddType<LocalGateway>()
+				.AddType<RemoteGateway>()
+				.AddType<GraphQL.Types.UserName>()
+				.AddType<UnsignedIntType>()
+				.BindRuntimeType<Version, SemverType>()
+				.TryAddTypeInterceptor<RightsTypeInterceptor>()
+				.AddQueryType<Query>()
+				.AddMutationType<Mutation>()
+				.AddSubscriptionType<Subscription>();
+
 			void AddTypedContext<TContext>()
 				where TContext : DatabaseContext
 			{
@@ -329,6 +394,7 @@ namespace Tgstation.Server.Host.Core
 			services.AddSingleton<IIdentityCache, IdentityCache>();
 			services.AddSingleton<ICryptographySuite, CryptographySuite>();
 			services.AddSingleton<ITokenFactory, TokenFactory>();
+			services.AddSingleton<ISessionInvalidationTracker, SessionInvalidationTracker>();
 			services.AddSingleton<IPasswordHasher<Models.User>, PasswordHasher<Models.User>>();
 
 			// configure platform specific services
@@ -356,6 +422,7 @@ namespace Tgstation.Server.Host.Core
 				services.AddSingleton<IPostWriteHandler, PosixPostWriteHandler>();
 
 				services.AddSingleton<IProcessFeatures, PosixProcessFeatures>();
+				services.AddHostedService<PosixProcessFeatures>();
 
 				// PosixProcessFeatures also needs a IProcessExecutor for gcore
 				services.AddSingleton(x => new Lazy<IProcessExecutor>(() => x.GetRequiredService<IProcessExecutor>(), true));
@@ -416,12 +483,22 @@ namespace Tgstation.Server.Host.Core
 			services.AddSingleton<IServerUpdateInitiator, ServerUpdateInitiator>();
 			services.AddSingleton<IDotnetDumpService, DotnetDumpService>();
 
+			// configure authorities
+			services.AddScoped(typeof(IRestAuthorityInvoker<>), typeof(RestAuthorityInvoker<>));
+			services.AddScoped(typeof(IGraphQLAuthorityInvoker<>), typeof(GraphQLAuthorityInvoker<>));
+			services.AddScoped<ILoginAuthority, LoginAuthority>();
+			services.AddScoped<IUserAuthority, UserAuthority>();
+			services.AddScoped<IUserGroupAuthority, UserGroupAuthority>();
+			services.AddScoped<IPermissionSetAuthority, PermissionSetAuthority>();
+			services.AddScoped<IAdministrationAuthority, AdministrationAuthority>();
+
 			// configure misc services
 			services.AddSingleton<IProcessExecutor, ProcessExecutor>();
 			services.AddSingleton<ISynchronousIOManager, SynchronousIOManager>();
 			services.AddSingleton<IServerPortProvider, ServerPortProivder>();
 			services.AddSingleton<ITopicClientFactory, TopicClientFactory>();
 			services.AddHostedService<CommandPipeManager>();
+			services.AddHostedService<VersionReportingService>();
 
 			services.AddFileDownloader();
 			services.AddGitHub();
@@ -451,6 +528,7 @@ namespace Tgstation.Server.Host.Core
 		/// <param name="controlPanelConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the <see cref="ControlPanelConfiguration"/> to use.</param>
 		/// <param name="generalConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the <see cref="GeneralConfiguration"/> to use.</param>
 		/// <param name="swarmConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the <see cref="SwarmConfiguration"/> to use.</param>
+		/// <param name="internalConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the <see cref="InternalConfiguration"/> to use.</param>
 		/// <param name="logger">The <see cref="Microsoft.Extensions.Logging.ILogger"/> for the <see cref="Application"/>.</param>
 		public void Configure(
 			IApplicationBuilder applicationBuilder,
@@ -461,6 +539,7 @@ namespace Tgstation.Server.Host.Core
 			IOptions<ControlPanelConfiguration> controlPanelConfigurationOptions,
 			IOptions<GeneralConfiguration> generalConfigurationOptions,
 			IOptions<SwarmConfiguration> swarmConfigurationOptions,
+			IOptions<InternalConfiguration> internalConfigurationOptions,
 			ILogger<Application> logger)
 		{
 			ArgumentNullException.ThrowIfNull(applicationBuilder);
@@ -474,6 +553,7 @@ namespace Tgstation.Server.Host.Core
 			var controlPanelConfiguration = controlPanelConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(controlPanelConfigurationOptions));
 			var generalConfiguration = generalConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(generalConfigurationOptions));
 			var swarmConfiguration = swarmConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(swarmConfigurationOptions));
+			var internalConfiguration = internalConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(internalConfigurationOptions));
 
 			ArgumentNullException.ThrowIfNull(logger);
 
@@ -593,6 +673,21 @@ namespace Tgstation.Server.Host.Core
 
 				// majority of handling is done in the controllers
 				endpoints.MapControllers();
+
+				if (internalConfiguration.EnableGraphQL)
+				{
+					logger.LogWarning("Enabling GraphQL. This API is experimental and breaking changes may occur at any time!");
+					var gqlOptions = new GraphQLServerOptions
+					{
+						EnableBatching = true,
+					};
+
+					gqlOptions.Tool.Enable = generalConfiguration.HostApiDocumentation;
+
+					endpoints
+						.MapGraphQL(Routes.GraphQL)
+						.WithOptions(gqlOptions);
+				}
 			});
 
 			// 404 anything that gets this far
@@ -618,7 +713,7 @@ namespace Tgstation.Server.Host.Core
 			services.AddHttpContextAccessor();
 			services.AddScoped<IApiHeadersProvider, ApiHeadersProvider>();
 			services.AddScoped<AuthenticationContextFactory>();
-			services.AddScoped<IAuthenticationContextFactory>(provider => provider.GetRequiredService<AuthenticationContextFactory>());
+			services.AddScoped<ITokenValidator>(provider => provider.GetRequiredService<AuthenticationContextFactory>());
 
 			// what if you
 			// wanted to just do this:
@@ -659,6 +754,15 @@ namespace Tgstation.Server.Host.Core
 
 							return Task.CompletedTask;
 						},
+						OnTokenValidated = context => context
+							.HttpContext
+							.RequestServices
+							.GetRequiredService<ITokenValidator>()
+							.ValidateToken(
+								context,
+								context
+									.HttpContext
+									.RequestAborted),
 					};
 				});
 		}

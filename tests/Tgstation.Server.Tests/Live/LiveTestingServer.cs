@@ -155,7 +155,11 @@ namespace Tgstation.Server.Tests.Live
 				$"General:OpenDreamGitUrl={OpenDreamUrl}",
 				$"Security:TokenExpiryMinutes=120", // timeouts are useless for us
 				$"General:OpenDreamSuppressInstallOutput={TestingUtils.RunningInGitHubActions}",
+				"Telemetry:DisableVersionReporting=true",
 			};
+
+			if (MultiServerClient.UseGraphQL)
+				args.Add("Internal:EnableGraphQL=true");
 
 			swarmArgs = new List<string>();
 			if (swarmConfiguration != null)

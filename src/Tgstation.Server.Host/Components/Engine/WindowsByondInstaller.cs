@@ -224,7 +224,7 @@ namespace Tgstation.Server.Host.Components.Engine
 		/// <inheritdoc />
 		protected override string GetDreamDaemonName(Version byondVersion, out bool supportsCli)
 		{
-			supportsCli = byondVersion >= DDExeVersion;
+			supportsCli = byondVersion >= DDExeVersion && !sessionConfiguration.ForceUseDreamDaemonExe;
 			return supportsCli ? "dd.exe" : "dreamdaemon.exe";
 		}
 
@@ -283,10 +283,11 @@ namespace Tgstation.Server.Host.Components.Engine
 			try
 			{
 				// noShellExecute because we aren't doing runas shennanigans
-				await using var directXInstaller = processExecutor.LaunchProcess(
+				await using var directXInstaller = await processExecutor.LaunchProcess(
 					IOManager.ConcatPath(rbdx, "DXSETUP.exe"),
 					rbdx,
 					"/silent",
+					cancellationToken,
 					noShellExecute: true);
 
 				int exitCode;

@@ -171,7 +171,8 @@ namespace Tgstation.Server.Host.Controllers
 			| DreamMakerRights.SetApiValidationPort
 			| DreamMakerRights.SetSecurityLevel
 			| DreamMakerRights.SetApiValidationRequirement
-			| DreamMakerRights.SetTimeout)]
+			| DreamMakerRights.SetTimeout
+			| DreamMakerRights.SetCompilerArguments)]
 		[ProducesResponseType(typeof(DreamMakerResponse), 200)]
 		[ProducesResponseType(204)]
 		[ProducesResponseType(typeof(ErrorMessageResponse), 410)]
@@ -196,7 +197,8 @@ namespace Tgstation.Server.Host.Controllers
 			{
 				if (!dreamMakerRights.HasFlag(DreamMakerRights.SetDme))
 					return Forbid();
-				if (model.ProjectName.Length == 0)
+
+				if (model.ProjectName.Length == 0) // can't use isnullorwhitespace because linux memes
 					hostModel.ProjectName = null;
 				else
 					hostModel.ProjectName = model.ProjectName;
@@ -230,21 +232,52 @@ namespace Tgstation.Server.Host.Controllers
 			{
 				if (!dreamMakerRights.HasFlag(DreamMakerRights.SetSecurityLevel))
 					return Forbid();
+
 				hostModel.ApiValidationSecurityLevel = model.ApiValidationSecurityLevel;
 			}
 
-			if (model.RequireDMApiValidation.HasValue)
+#pragma warning disable CS0618 // Type or member is obsolete
+			bool? legacyRequireDMApiValidation = model.RequireDMApiValidation;
+#pragma warning restore CS0618 // Type or member is obsolete
+			if (legacyRequireDMApiValidation.HasValue)
 			{
 				if (!dreamMakerRights.HasFlag(DreamMakerRights.SetApiValidationRequirement))
 					return Forbid();
-				hostModel.RequireDMApiValidation = model.RequireDMApiValidation;
+
+				hostModel.DMApiValidationMode = legacyRequireDMApiValidation.Value
+					? DMApiValidationMode.Required
+					: DMApiValidationMode.Optional;
+			}
+
+			if (model.DMApiValidationMode.HasValue)
+			{
+				if (legacyRequireDMApiValidation.HasValue)
+					return BadRequest(new ErrorMessageResponse(ErrorCode.ModelValidationFailure));
+
+				if (!dreamMakerRights.HasFlag(DreamMakerRights.SetApiValidationRequirement))
+					return Forbid();
+
+				hostModel.DMApiValidationMode = model.DMApiValidationMode;
 			}
 
 			if (model.Timeout.HasValue)
 			{
 				if (!dreamMakerRights.HasFlag(DreamMakerRights.SetTimeout))
 					return Forbid();
+
 				hostModel.Timeout = model.Timeout;
+			}
+
+			if (model.CompilerAdditionalArguments != null)
+			{
+				if (!dreamMakerRights.HasFlag(DreamMakerRights.SetCompilerArguments))
+					return Forbid();
+
+				var sanitizedArguments = model.CompilerAdditionalArguments.Trim();
+				if (sanitizedArguments.Length == 0)
+					hostModel.CompilerAdditionalArguments = null;
+				else
+					hostModel.CompilerAdditionalArguments = sanitizedArguments;
 			}
 
 			await DatabaseContext.Save(cancellationToken);

@@ -28,7 +28,7 @@ namespace Tgstation.Server.Tests.Live
 		readonly ICryptographySuite cryptographySuite;
 		readonly ILogger<TestingGitHubService> logger;
 
-		public static readonly IGitHubClient RealTestClient;
+		public static readonly IGitHubClient RealClient;
 
 		static TestingGitHubService()
 		{
@@ -39,7 +39,7 @@ namespace Tgstation.Server.Tests.Live
 			});
 
 			var gitHubClientFactory = new GitHubClientFactory(new AssemblyInformationProvider(), Mock.Of<ILogger<GitHubClientFactory>>(), mockOptions.Object);
-			RealTestClient = gitHubClientFactory.CreateClient();
+			RealClient = gitHubClientFactory.CreateClient(CancellationToken.None).GetAwaiter().GetResult();
 		}
 
 		public static async Task InitializeAndInject(CancellationToken cancellationToken)
@@ -47,7 +47,7 @@ namespace Tgstation.Server.Tests.Live
 			Release targetRelease;
 			do
 			{
-				var releases = await RealTestClient
+				var releases = await RealClient
 					.Repository
 					.Release
 					.GetAll("tgstation", "tgstation-server")
@@ -62,12 +62,12 @@ namespace Tgstation.Server.Tests.Live
 				{ TestLiveServer.TestUpdateVersion, targetRelease }
 			};
 
-			var testCommitTask = RealTestClient
+			var testCommitTask = RealClient
 				.Repository
 				.Commit
 				.Get("Cyberboss", "common_core", "4b4926dfaf6295f19f8ae7abf03cb357dbb05b29")
 				.WaitAsync(cancellationToken);
-			testPr = await RealTestClient
+			testPr = await RealClient
 				.PullRequest
 				.Get("Cyberboss", "common_core", 2)
 				.WaitAsync(cancellationToken);
@@ -89,19 +89,19 @@ namespace Tgstation.Server.Tests.Live
 			return Task.CompletedTask;
 		}
 
-		public ValueTask<int> CreateDeployment(NewDeployment newDeployment, string repoOwner, string repoName, CancellationToken cancellationToken)
+		public ValueTask<long> CreateDeployment(NewDeployment newDeployment, string repoOwner, string repoName, CancellationToken cancellationToken)
 		{
 			logger.LogTrace("CreateDeployment");
-			return ValueTask.FromResult(new Random().Next()); ;
+			return ValueTask.FromResult<long>(new Random().Next()); ;
 		}
 
-		public Task CreateDeploymentStatus(NewDeploymentStatus newDeploymentStatus, string repoOwner, string repoName, int deploymentId, CancellationToken cancellationToken)
+		public Task CreateDeploymentStatus(NewDeploymentStatus newDeploymentStatus, string repoOwner, string repoName, long deploymentId, CancellationToken cancellationToken)
 		{
 			logger.LogTrace("CreateDeploymentStatus");
 			return Task.CompletedTask;
 		}
 
-		public Task CreateDeploymentStatus(NewDeploymentStatus newDeploymentStatus, long repoId, int deploymentId, CancellationToken cancellationToken)
+		public Task CreateDeploymentStatus(NewDeploymentStatus newDeploymentStatus, long repoId, long deploymentId, CancellationToken cancellationToken)
 		{
 			logger.LogTrace("CreateDeploymentStatus");
 			return Task.CompletedTask;
@@ -113,10 +113,10 @@ namespace Tgstation.Server.Tests.Live
 			return ValueTask.FromResult(cryptographySuite.GetSecureString());
 		}
 
-		public ValueTask<int> GetCurrentUserId(CancellationToken cancellationToken)
+		public ValueTask<long> GetCurrentUserId(CancellationToken cancellationToken)
 		{
 			logger.LogTrace("GetCurrentUserId");
-			return ValueTask.FromResult(new Random().Next());
+			return ValueTask.FromResult<long>(new Random().Next());
 		}
 
 		public ValueTask<long> GetRepositoryId(string repoOwner, string repoName, CancellationToken cancellationToken)

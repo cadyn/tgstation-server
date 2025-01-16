@@ -40,7 +40,7 @@ namespace Tgstation.Server.Host.Components.Engine
 		}
 
 		/// <inheritdoc />
-		public abstract IEngineInstallation CreateInstallation(EngineVersion version, string path, Task installationTask);
+		public abstract ValueTask<IEngineInstallation> CreateInstallation(EngineVersion version, string path, Task installationTask, CancellationToken cancellationToken);
 
 		/// <inheritdoc />
 		public abstract Task CleanCache(CancellationToken cancellationToken);
@@ -52,7 +52,7 @@ namespace Tgstation.Server.Host.Components.Engine
 		public abstract ValueTask UpgradeInstallation(EngineVersion version, string path, CancellationToken cancellationToken);
 
 		/// <inheritdoc />
-		public abstract ValueTask<IEngineInstallationData> DownloadVersion(EngineVersion version, JobProgressReporter? jobProgressReporter, CancellationToken cancellationToken);
+		public abstract ValueTask<IEngineInstallationData> DownloadVersion(EngineVersion version, JobProgressReporter jobProgressReporter, CancellationToken cancellationToken);
 
 		/// <inheritdoc />
 		public abstract ValueTask TrustDmbPath(EngineVersion version, string fullDmbPath, CancellationToken cancellationToken);

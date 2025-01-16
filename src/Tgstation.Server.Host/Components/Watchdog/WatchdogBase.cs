@@ -1,10 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
-
-using BetterWin32Errors;
 
 using Microsoft.Extensions.Logging;
 
@@ -39,15 +38,25 @@ namespace Tgstation.Server.Host.Components.Watchdog
 		public long? SessionId => GetActiveController()?.ReattachInformation.Id;
 
 		/// <inheritdoc />
+		public uint? ClientCount { get; private set; }
+
+		/// <inheritdoc />
+		public DateTimeOffset? LaunchTime => GetActiveController()?.LaunchTime;
+
+		/// <inheritdoc />
 		public WatchdogStatus Status
 		{
 			get => status;
-			set
+			protected set
 			{
+				var oldStatus = status;
 				status = value;
-				Logger.LogTrace("Status set to {status}", status);
+				Logger.LogTrace("Status set from {oldStatus} to {status}", oldStatus, status);
 			}
 		}
+
+		/// <inheritdoc />
+		public long? MemoryUsage => GetActiveController()?.MemoryUsage;
 
 		/// <inheritdoc />
 		public abstract bool AlphaIsActive { get; }
@@ -271,8 +280,13 @@ namespace Tgstation.Server.Host.Components.Watchdog
 		{
 			using (await SemaphoreSlimContext.Lock(synchronizationSemaphore, cancellationToken))
 			{
-				bool match = launchParameters.CanApplyWithoutReboot(ActiveLaunchParameters);
+				var currentLaunchParameters = ActiveLaunchParameters;
 				ActiveLaunchParameters = launchParameters;
+				var currentEngine = GetActiveController()?.EngineVersion.Engine;
+				if (!currentEngine.HasValue)
+					return false;
+
+				bool match = launchParameters.CanApplyWithoutReboot(currentLaunchParameters, currentEngine.Value);
 				if (match || Status == WatchdogStatus.Offline || Status == WatchdogStatus.DelayedRestart)
 					return false;
 
@@ -558,6 +572,7 @@ namespace Tgstation.Server.Host.Components.Watchdog
 			// since neither server is running, this is safe to do
 			LastLaunchParameters = ActiveLaunchParameters;
 			healthChecksMissed = 0;
+			ClientCount = null;
 
 			try
 			{
@@ -655,6 +670,7 @@ namespace Tgstation.Server.Host.Components.Watchdog
 			// we lost the server, just restart entirely
 			// DCT: Operation must always run
 			await DisposeAndNullControllers(CancellationToken.None);
+			ClientCount = null;
 			const string FailReattachMessage = "Unable to properly reattach to server! Restarting watchdog...";
 			Logger.LogWarning(FailReattachMessage);
 
@@ -814,21 +830,18 @@ namespace Tgstation.Server.Host.Components.Watchdog
 		/// </summary>
 		/// <param name="currentCompileJob">The session's current <see cref="CompileJob"/>.</param>
 		/// <returns>A <see cref="Task"/> that completes if and when a newer <see cref="CompileJob"/> is available.</returns>
-		Task InitialCheckDmbUpdated(CompileJob currentCompileJob)
+		async Task InitialCheckDmbUpdated(CompileJob currentCompileJob)
 		{
 			var factoryTask = DmbFactory.OnNewerDmb;
 
-			var latestCompileJob = DmbFactory.LatestCompileJob();
-			if (latestCompileJob == null)
-				return factoryTask;
-
-			if (latestCompileJob.Id != currentCompileJob.Id)
+			var latestCompileJob = await DmbFactory.LatestCompileJob();
+			if (latestCompileJob != null && latestCompileJob.Id != currentCompileJob.Id)
 			{
 				Logger.LogDebug("Found new CompileJob without waiting");
-				return Task.CompletedTask;
+				return;
 			}
 
-			return factoryTask;
+			await factoryTask;
 		}
 
 		/// <summary>
@@ -1174,7 +1187,10 @@ namespace Tgstation.Server.Host.Components.Watchdog
 				}
 			}
 			else
+			{
 				healthChecksMissed = 0;
+				ClientCount = response.ClientCount;
+			}
 
 			return MonitorAction.Continue;
 		}

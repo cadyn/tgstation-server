@@ -4,7 +4,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
-namespace Tgstation.Server.Host.Database.Migrations
+namespace Tgstation.Server.Host.Database
 {
 	[DbContext(typeof(SqliteDatabaseContext))]
 	partial class SqliteDatabaseContextModelSnapshot : ModelSnapshot
@@ -12,7 +12,7 @@ namespace Tgstation.Server.Host.Database.Migrations
 		protected override void BuildModel(ModelBuilder modelBuilder)
 		{
 #pragma warning disable 612, 618
-			modelBuilder.HasAnnotation("ProductVersion", "8.0.1");
+			modelBuilder.HasAnnotation("ProductVersion", "8.0.10");
 
 			modelBuilder.Entity("Tgstation.Server.Host.Models.ChatBot", b =>
 			{
@@ -129,7 +129,7 @@ namespace Tgstation.Server.Host.Database.Migrations
 					.IsRequired()
 					.HasColumnType("TEXT");
 
-				b.Property<int?>("GitHubDeploymentId")
+				b.Property<long?>("GitHubDeploymentId")
 					.HasColumnType("INTEGER");
 
 				b.Property<long?>("GitHubRepoId")
@@ -205,6 +205,10 @@ namespace Tgstation.Server.Host.Database.Migrations
 					.IsRequired()
 					.HasColumnType("INTEGER");
 
+				b.Property<ushort?>("OpenDreamTopicPort")
+					.IsRequired()
+					.HasColumnType("INTEGER");
+
 				b.Property<ushort?>("Port")
 					.IsRequired()
 					.HasColumnType("INTEGER");
@@ -248,16 +252,19 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.Property<int>("ApiValidationSecurityLevel")
 					.HasColumnType("INTEGER");
 
+				b.Property<string>("CompilerAdditionalArguments")
+					.HasMaxLength(10000)
+					.HasColumnType("TEXT");
+
+				b.Property<int>("DMApiValidationMode")
+					.HasColumnType("INTEGER");
+
 				b.Property<long>("InstanceId")
 					.HasColumnType("INTEGER");
 
 				b.Property<string>("ProjectName")
 					.HasMaxLength(10000)
 					.HasColumnType("TEXT");
-
-				b.Property<bool?>("RequireDMApiValidation")
-					.IsRequired()
-					.HasColumnType("INTEGER");
 
 				b.Property<TimeSpan?>("Timeout")
 					.IsRequired()
@@ -276,6 +283,21 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.Property<long?>("Id")
 					.ValueGeneratedOnAdd()
 					.HasColumnType("INTEGER");
+
+				b.Property<string>("AutoStartCron")
+					.IsRequired()
+					.HasMaxLength(1000)
+					.HasColumnType("TEXT");
+
+				b.Property<string>("AutoStopCron")
+					.IsRequired()
+					.HasMaxLength(1000)
+					.HasColumnType("TEXT");
+
+				b.Property<string>("AutoUpdateCron")
+					.IsRequired()
+					.HasMaxLength(1000)
+					.HasColumnType("TEXT");
 
 				b.Property<uint?>("AutoUpdateInterval")
 					.IsRequired()
@@ -425,7 +447,7 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.Property<int>("Provider")
 					.HasColumnType("INTEGER");
 
-				b.Property<long?>("UserId")
+				b.Property<long>("UserId")
 					.HasColumnType("INTEGER");
 
 				b.HasKey("Id");
@@ -864,7 +886,8 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.HasOne("Tgstation.Server.Host.Models.User", "User")
 					.WithMany("OAuthConnections")
 					.HasForeignKey("UserId")
-					.OnDelete(DeleteBehavior.Cascade);
+					.OnDelete(DeleteBehavior.Cascade)
+					.IsRequired();
 
 				b.Navigation("User");
 			});

@@ -118,7 +118,7 @@ namespace Tgstation.Server.Host.Components.Engine
 
 		/// <inheritdoc />
 		public async ValueTask ChangeVersion(
-			JobProgressReporter? progressReporter,
+			JobProgressReporter progressReporter,
 			EngineVersion version,
 			Stream? customVersionStream,
 			bool allowInstallation,
@@ -166,8 +166,11 @@ namespace Tgstation.Server.Host.Components.Engine
 				"Acquiring lock on BYOND version {version}...",
 				requiredVersion?.ToString() ?? $"{ActiveVersion} (active)");
 			var versionToUse = requiredVersion ?? ActiveVersion ?? throw new JobException(ErrorCode.EngineNoVersionsInstalled);
+
+			using var progressReporter = new JobProgressReporter();
+
 			var installLock = await AssertAndLockVersion(
-				null,
+				progressReporter,
 				versionToUse,
 				null,
 				requiredVersion != null,
@@ -334,7 +337,8 @@ namespace Tgstation.Server.Host.Components.Engine
 
 				try
 				{
-					AddInstallationContainer(version, path, Task.CompletedTask);
+					var installation = await engineInstaller.CreateInstallation(version, path, Task.CompletedTask, cancellationToken);
+					AddInstallationContainer(installation);
 					logger.LogDebug("Added detected BYOND version {versionKey}...", version);
 				}
 				catch (Exception ex)
@@ -388,7 +392,7 @@ namespace Tgstation.Server.Host.Components.Engine
 		/// <summary>
 		/// Ensures a BYOND <paramref name="version"/> is installed if it isn't already.
 		/// </summary>
-		/// <param name="progressReporter">The optional <see cref="JobProgressReporter"/> for the operation.</param>
+		/// <param name="progressReporter">The <see cref="JobProgressReporter"/> for the operation.</param>
 		/// <param name="version">The <see cref="EngineVersion"/> to install.</param>
 		/// <param name="customVersionStream">Optional custom zip file <see cref="Stream"/> to use. Will cause a <see cref="Version.Build"/> number to be added.</param>
 		/// <param name="neededForLock">If this BYOND version is required as part of a locking operation.</param>
@@ -396,7 +400,7 @@ namespace Tgstation.Server.Host.Components.Engine
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in the <see cref="EngineExecutableLock"/>.</returns>
 		async ValueTask<EngineExecutableLock> AssertAndLockVersion(
-			JobProgressReporter? progressReporter,
+			JobProgressReporter progressReporter,
 			EngineVersion version,
 			Stream? customVersionStream,
 			bool neededForLock,
@@ -407,111 +411,135 @@ namespace Tgstation.Server.Host.Components.Engine
 			IEngineInstallation installation;
 			EngineExecutableLock installLock;
 			bool installedOrInstalling;
-			lock (installedVersions)
+
+			// loop is because of the race condition with potentialInstallation, installedVersions, and CustomIteration selection
+			while (true)
 			{
-				if (customVersionStream != null)
-				{
-					var customInstallationNumber = 1;
-					do
-					{
-						version.CustomIteration = customInstallationNumber++;
-					}
-					while (installedVersions.ContainsKey(version));
-				}
-
-				installedOrInstalling = installedVersions.TryGetValue(version, out var installationContainerNullable);
-				ReferenceCountingContainer<IEngineInstallation, EngineExecutableLock> installationContainer;
-				if (!installedOrInstalling)
-				{
-					if (!allowInstallation)
-						throw new InvalidOperationException($"Engine version {version} not installed!");
-
-					installationContainer = AddInstallationContainer(
-						version,
-						ioManager.ResolvePath(version.ToString()),
-						ourTcs.Task);
-				}
-				else
-					installationContainer = installationContainerNullable!;
-
-				installation = installationContainer.Instance;
-				installLock = installationContainer.AddReference();
-			}
-
-			var deploymentPipelineProcesses = !neededForLock;
-			try
-			{
-				if (installedOrInstalling)
-				{
-					if (progressReporter != null)
-						progressReporter.StageName = "Waiting for existing installation job...";
-
-					if (neededForLock && !installation.InstallationTask.IsCompleted)
-						logger.LogWarning("The required engine version ({version}) is not readily available! We will have to wait for it to install.", version);
-
-					await installation.InstallationTask.WaitAsync(cancellationToken);
-					return installLock;
-				}
-
-				// okay up to us to install it then
-				try
+				lock (installedVersions)
 				{
 					if (customVersionStream != null)
-						logger.LogInformation("Installing custom engine version as {version}...", version);
-					else if (neededForLock)
 					{
-						if (version.CustomIteration.HasValue)
-							throw new JobException(ErrorCode.EngineNonExistentCustomVersion);
+						var customInstallationNumber = 1;
+						do
+						{
+							version.CustomIteration = customInstallationNumber++;
+						}
+						while (installedVersions.ContainsKey(version));
+					}
+				}
 
-						logger.LogWarning("The required engine version ({version}) is not readily available! We will have to install it.", version);
+				var potentialInstallation = await engineInstaller.CreateInstallation(
+					version,
+					ioManager.ResolvePath(version.ToString()),
+					ourTcs.Task,
+					cancellationToken);
+
+				lock (installedVersions)
+				{
+					if (customVersionStream != null && installedVersions.ContainsKey(version))
+						continue;
+
+					installedOrInstalling = installedVersions.TryGetValue(version, out var installationContainerNullable);
+					ReferenceCountingContainer<IEngineInstallation, EngineExecutableLock> installationContainer;
+					if (!installedOrInstalling)
+					{
+						if (!allowInstallation)
+							throw new InvalidOperationException($"Engine version {version} not installed!");
+
+						installationContainer = AddInstallationContainer(potentialInstallation);
 					}
 					else
-						logger.LogDebug("Requested engine version {version} not currently installed. Doing so now...", version);
+						installationContainer = installationContainerNullable!;
 
-					if (progressReporter != null)
+					installation = installationContainer.Instance;
+					installLock = installationContainer.AddReference();
+				}
+
+				var deploymentPipelineProcesses = !neededForLock;
+				try
+				{
+					if (installedOrInstalling)
+					{
+						progressReporter.StageName = "Waiting for existing installation job...";
+
+						if (neededForLock && !installation.InstallationTask.IsCompleted)
+							logger.LogWarning("The required engine version ({version}) is not readily available! We will have to wait for it to install.", version);
+
+						await installation.InstallationTask.WaitAsync(cancellationToken);
+						return installLock;
+					}
+
+					// okay up to us to install it then
+					string? installPath = null;
+					try
+					{
+						if (customVersionStream != null)
+							logger.LogInformation("Installing custom engine version as {version}...", version);
+						else if (neededForLock)
+						{
+							if (version.CustomIteration.HasValue)
+								throw new JobException(ErrorCode.EngineNonExistentCustomVersion);
+
+							logger.LogWarning("The required engine version ({version}) is not readily available! We will have to install it.", version);
+						}
+						else
+							logger.LogInformation("Requested engine version {version} not currently installed. Doing so now...", version);
+
 						progressReporter.StageName = "Running event";
 
-					var versionString = version.ToString();
-					await eventConsumer.HandleEvent(EventType.EngineInstallStart, new List<string> { versionString }, deploymentPipelineProcesses, cancellationToken);
+						var versionString = version.ToString();
+						await eventConsumer.HandleEvent(EventType.EngineInstallStart, new List<string> { versionString }, deploymentPipelineProcesses, cancellationToken);
 
-					await InstallVersionFiles(progressReporter, version, customVersionStream, deploymentPipelineProcesses, cancellationToken);
+						installPath = await InstallVersionFiles(progressReporter, version, customVersionStream, deploymentPipelineProcesses, cancellationToken);
+						await eventConsumer.HandleEvent(EventType.EngineInstallComplete, new List<string> { versionString }, deploymentPipelineProcesses, cancellationToken);
 
-					ourTcs.SetResult();
+						ourTcs.SetResult();
+					}
+					catch (Exception ex)
+					{
+						if (installPath != null)
+						{
+							try
+							{
+								logger.LogDebug("Cleaning up failed installation at {path}...", installPath);
+								await ioManager.DeleteDirectory(installPath, cancellationToken);
+							}
+							catch (Exception ex2)
+							{
+								logger.LogError(ex2, "Error cleaning up failed installation!");
+							}
+						}
+						else if (ex is not OperationCanceledException)
+							await eventConsumer.HandleEvent(EventType.EngineInstallFail, new List<string> { ex.Message }, deploymentPipelineProcesses, cancellationToken);
 
-					await eventConsumer.HandleEvent(EventType.EngineInstallComplete, new List<string> { versionString }, deploymentPipelineProcesses, cancellationToken);
+						lock (installedVersions)
+							installedVersions.Remove(version);
+
+						ourTcs.SetException(ex);
+						throw;
+					}
+
+					return installLock;
 				}
-				catch (Exception ex)
+				catch
 				{
-					if (ex is not OperationCanceledException)
-						await eventConsumer.HandleEvent(EventType.EngineInstallFail, new List<string> { ex.Message }, deploymentPipelineProcesses, cancellationToken);
-
-					lock (installedVersions)
-						installedVersions.Remove(version);
-
-					ourTcs.SetException(ex);
+					installLock.Dispose();
 					throw;
 				}
-
-				return installLock;
-			}
-			catch
-			{
-				installLock.Dispose();
-				throw;
 			}
 		}
 
 		/// <summary>
 		/// Installs the files for a given BYOND <paramref name="version"/>.
 		/// </summary>
-		/// <param name="progressReporter">The optional <see cref="JobProgressReporter"/> for the operation.</param>
+		/// <param name="progressReporter">The <see cref="JobProgressReporter"/> for the operation.</param>
 		/// <param name="version">The <see cref="EngineVersion"/> being installed with the <see cref="Version.Build"/> number set if appropriate.</param>
 		/// <param name="customVersionStream">Custom zip file <see cref="Stream"/> to use. Will cause a <see cref="Version.Build"/> number to be added.</param>
 		/// <param name="deploymentPipelineProcesses">If processes should be launched as part of the deployment pipeline.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
-		/// <returns>A <see cref="ValueTask"/> representing the running operation.</returns>
-		async ValueTask InstallVersionFiles(
-			JobProgressReporter? progressReporter,
+		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in the directory the engine was installed to.</returns>
+		async ValueTask<string> InstallVersionFiles(
+			JobProgressReporter progressReporter,
 			EngineVersion version,
 			Stream? customVersionStream,
 			bool deploymentPipelineProcesses,
@@ -528,14 +556,12 @@ namespace Tgstation.Server.Host.Components.Engine
 			try
 			{
 				IEngineInstallationData engineInstallationData;
+				var remainingProgress = 1.0;
 				if (customVersionStream == null)
 				{
-					if (progressReporter != null)
-						progressReporter.StageName = "Downloading version";
-
-					engineInstallationData = await engineInstaller.DownloadVersion(version, progressReporter, cancellationToken);
-
-					progressReporter?.ReportProgress(null);
+					using var subReporter = progressReporter.CreateSection("Downloading Version", 0.5);
+					remainingProgress -= 0.5;
+					engineInstallationData = await engineInstaller.DownloadVersion(version, subReporter, cancellationToken);
 				}
 				else
 #pragma warning disable CA2000 // Dispose objects before losing scope, false positive
@@ -544,33 +570,45 @@ namespace Tgstation.Server.Host.Components.Engine
 						customVersionStream);
 #pragma warning restore CA2000 // Dispose objects before losing scope
 
-				await using (engineInstallationData)
+				JobProgressReporter remainingReporter;
+				try
 				{
-					if (progressReporter != null)
-						progressReporter.StageName = "Cleaning target directory";
-
-					await directoryCleanupTask;
-
-					if (progressReporter != null)
-						progressReporter.StageName = "Extracting data";
-
-					logger.LogTrace("Extracting engine to {extractPath}...", installFullPath);
-					await engineInstallationData.ExtractToPath(installFullPath, cancellationToken);
+					remainingReporter = progressReporter.CreateSection(null, remainingProgress);
+				}
+				catch
+				{
+					await engineInstallationData.DisposeAsync();
+					throw;
 				}
 
-				if (progressReporter != null)
-					progressReporter.StageName = "Running installation actions";
+				using (remainingReporter)
+				{
+					await using (engineInstallationData)
+					{
+						remainingReporter.StageName = "Cleaning target directory";
 
-				await engineInstaller.Install(version, installFullPath, deploymentPipelineProcesses, cancellationToken);
+						await directoryCleanupTask;
+						remainingReporter.ReportProgress(0.1);
+						remainingReporter.StageName = "Extracting data";
 
-				if (progressReporter != null)
-					progressReporter.StageName = "Writing version file";
+						logger.LogTrace("Extracting engine to {extractPath}...", installFullPath);
+						await engineInstallationData.ExtractToPath(installFullPath, cancellationToken);
+						remainingReporter.ReportProgress(0.3);
+					}
 
-				// make sure to do this last because this is what tells us we have a valid version in the future
-				await ioManager.WriteAllBytes(
-					ioManager.ConcatPath(installFullPath, VersionFileName),
-					Encoding.UTF8.GetBytes(version.ToString()),
-					cancellationToken);
+					remainingReporter.StageName = "Running installation actions";
+
+					await engineInstaller.Install(version, installFullPath, deploymentPipelineProcesses, cancellationToken);
+
+					remainingReporter.ReportProgress(0.9);
+					remainingReporter.StageName = "Writing version file";
+
+					// make sure to do this last because this is what tells us we have a valid version in the future
+					await ioManager.WriteAllBytes(
+						ioManager.ConcatPath(installFullPath, VersionFileName),
+						Encoding.UTF8.GetBytes(version.ToString()),
+						cancellationToken);
+				}
 			}
 			catch (HttpRequestException ex)
 			{
@@ -586,23 +624,21 @@ namespace Tgstation.Server.Host.Components.Engine
 				await ioManager.DeleteDirectory(installFullPath, cancellationToken);
 				throw;
 			}
+
+			return installFullPath;
 		}
 
 		/// <summary>
 		/// Create and add a new <see cref="IEngineInstallation"/> to <see cref="installedVersions"/>.
 		/// </summary>
-		/// <param name="version">The <see cref="Version"/> being added.</param>
-		/// <param name="installPath">The path to the installation.</param>
-		/// <param name="installationTask">The <see cref="ValueTask"/> representing the installation process.</param>
-		/// <returns>The new <see cref="IEngineInstallation"/>.</returns>
-		ReferenceCountingContainer<IEngineInstallation, EngineExecutableLock> AddInstallationContainer(EngineVersion version, string installPath, Task installationTask)
+		/// <param name="installation">The <see cref="IEngineInstallation"/> being added.</param>
+		/// <returns>A new <see cref="ReferenceCountingContainer{TWrapped, TReference}"/> for the <see cref="IEngineInstallation"/>/<see cref="EngineExecutableLock"/>.</returns>
+		ReferenceCountingContainer<IEngineInstallation, EngineExecutableLock> AddInstallationContainer(IEngineInstallation installation)
 		{
-			var installation = engineInstaller.CreateInstallation(version, installPath, installationTask);
-
 			var installationContainer = new ReferenceCountingContainer<IEngineInstallation, EngineExecutableLock>(installation);
 
 			lock (installedVersions)
-				installedVersions.Add(version, installationContainer);
+				installedVersions.Add(installation.Version, installationContainer);
 
 			return installationContainer;
 		}

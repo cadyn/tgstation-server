@@ -32,7 +32,7 @@ using Tgstation.Server.Host.IO;
 using Tgstation.Server.Host.System;
 using Tgstation.Server.Api.Models;
 using Tgstation.Server.Tests.Live;
-using Tgstation.Server.Host.Utils;
+using Tgstation.Server.Host.Properties;
 
 namespace Tgstation.Server.Tests
 {
@@ -75,12 +75,21 @@ namespace Tgstation.Server.Tests
 		}
 
 		[TestMethod]
-		public void TestApiVersion()
+		public void TestRestVersion()
 		{
-			var versionString = versionsPropertyGroup.Element(xmlNamespace + "TgsApiVersion").Value;
+			var versionString = versionsPropertyGroup.Element(xmlNamespace + "TgsRestVersion").Value;
 			Assert.IsNotNull(versionString);
 			Assert.IsTrue(Version.TryParse(versionString, out var expected));
 			Assert.AreEqual(expected, ApiHeaders.Version);
+		}
+
+		[TestMethod]
+		public void TestGraphQLVersion()
+		{
+			var versionString = versionsPropertyGroup.Element(xmlNamespace + "TgsGraphQLVersion").Value;
+			Assert.IsNotNull(versionString);
+			Assert.IsTrue(Version.TryParse(versionString, out var expected));
+			Assert.AreEqual(expected, Version.Parse(MasterVersionsAttribute.Instance.RawGraphQLVersion));
 		}
 
 		[TestMethod]
@@ -208,7 +217,7 @@ namespace Tgstation.Server.Tests
 					? new WindowsProcessFeatures(Mock.Of<ILogger<WindowsProcessFeatures>>())
 					: new PosixProcessFeatures(
 						new Lazy<IProcessExecutor>(() => null),
-						Mock.Of<IIOManager>(),
+						new DefaultIOManager(),
 						loggerFactory.CreateLogger<PosixProcessFeatures>()),
 					Mock.Of<IIOManager>(),
 					loggerFactory.CreateLogger<ProcessExecutor>(),
@@ -270,7 +279,7 @@ namespace Tgstation.Server.Tests
 			var versionString = versionsPropertyGroup.Element(xmlNamespace + "TgsClientVersion").Value + ".0";
 			Assert.IsNotNull(versionString);
 			Assert.IsTrue(Version.TryParse(versionString, out var expected));
-			var actual = typeof(ServerClientFactory).Assembly.GetName().Version;
+			var actual = typeof(RestServerClientFactory).Assembly.GetName().Version;
 			Assert.AreEqual(expected, actual);
 		}
 
@@ -498,10 +507,11 @@ namespace Tgstation.Server.Tests
 
 			try
 			{
-				await using var process = processExecutor.LaunchProcess(
+				await using var process = await processExecutor.LaunchProcess(
 					ddPath,
 					Environment.CurrentDirectory,
 					"fake.dmb -map-threads 3 -close",
+					CancellationToken.None,
 					null,
 					null,
 					true,

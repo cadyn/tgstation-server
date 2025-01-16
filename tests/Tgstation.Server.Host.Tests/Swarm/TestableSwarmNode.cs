@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.IdentityModel.Tokens;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 using Moq;
@@ -20,6 +21,7 @@ using Tgstation.Server.Host.Controllers;
 using Tgstation.Server.Host.Core;
 using Tgstation.Server.Host.Database;
 using Tgstation.Server.Host.IO;
+using Tgstation.Server.Host.Models;
 using Tgstation.Server.Host.Security;
 using Tgstation.Server.Host.System;
 using Tgstation.Server.Host.Transfer;
@@ -75,6 +77,24 @@ namespace Tgstation.Server.Host.Swarm.Tests
 			}
 		}
 
+		private class MockTokenFactory : ITokenFactory
+		{
+			public ReadOnlySpan<byte> SigningKeyBytes
+			{
+				get => [0, 1, 2, 3, 4];
+				set
+				{
+				}
+			}
+
+			public TokenValidationParameters ValidationParameters => throw new NotSupportedException();
+
+			public string CreateToken(User user, bool oAuth)
+			{
+				throw new NotSupportedException();
+			}
+		}
+
 		public TestableSwarmNode(
 			ILoggerFactory loggerFactory,
 			SwarmConfiguration swarmConfiguration,
@@ -109,7 +129,7 @@ namespace Tgstation.Server.Host.Swarm.Tests
 			mockAsyncDelayer.Setup(
 				x => x.Delay(It.IsAny<TimeSpan>(), It.IsAny<CancellationToken>()))
 				.Returns<TimeSpan, CancellationToken>(
-					(delay, ct) => Task.Delay(TimeSpan.FromMilliseconds(100), ct));
+					async (delay, ct) => await Task.Delay(TimeSpan.FromMilliseconds(100), ct));
 
 			var mockServerUpdater = new Mock<IServerUpdater>();
 
@@ -132,13 +152,12 @@ namespace Tgstation.Server.Host.Swarm.Tests
 				new CryptographySuite(
 					Mock.Of<IPasswordHasher<Models.User>>()),
 				Mock.Of<IIOManager>(),
-				new AsyncDelayer(), // use a real one here because otherwise tickets expire too fast
+				new AsyncDelayer(Mock.Of<ILogger<AsyncDelayer>>()), // use a real one here because otherwise tickets expire too fast
 				CreateLoggerFactoryForLogger(loggerFactory.CreateLogger($"FileTransferService-{swarmConfiguration.Identifier}"), out var mockLoggerFactory).CreateLogger<FileTransferService>());
 
 			RpcMapper = new SwarmRpcMapper(
 				(targetService, targetTransfer) => new SwarmController(
 					targetService,
-					mockAssemblyInformationProvider.Object,
 					targetTransfer,
 					mockOptions.Object,
 					loggerFactory.CreateLogger<SwarmController>()),
@@ -153,6 +172,8 @@ namespace Tgstation.Server.Host.Swarm.Tests
 			UpdateCommits = true;
 
 			logger = loggerFactory.CreateLogger($"TestableSwarmNode-{swarmConfiguration.Identifier}");
+
+			var mockTokenFactory = new MockTokenFactory();
 
 			var runCount = 0;
 			void RecreateControllerAndService()
@@ -180,6 +201,7 @@ namespace Tgstation.Server.Host.Swarm.Tests
 					mockAsyncDelayer.Object,
 					mockServerUpdater.Object,
 					TransferService,
+					mockTokenFactory,
 					mockOptions.Object,
 					serviceLogger);
 			}

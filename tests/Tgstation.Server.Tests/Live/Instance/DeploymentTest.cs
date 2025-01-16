@@ -1,10 +1,13 @@
 ﻿using System;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.VisualStudio.TestTools.UnitTesting;
 
 using Tgstation.Server.Api.Models;
+using Tgstation.Server.Api.Models.Internal;
 using Tgstation.Server.Api.Models.Request;
 using Tgstation.Server.Api.Models.Response;
 using Tgstation.Server.Api.Rights;
@@ -24,7 +27,7 @@ namespace Tgstation.Server.Tests.Live.Instance
 		readonly ushort dmPort;
 		readonly ushort ddPort;
 		readonly bool lowPriorityDeployments;
-		readonly EngineType testEngine;
+		readonly EngineVersion testEngine;
 
 		Task vpTest;
 
@@ -34,7 +37,7 @@ namespace Tgstation.Server.Tests.Live.Instance
 			ushort dmPort,
 			ushort ddPort,
 			bool lowPriorityDeployments,
-			EngineType testEngine) : base(jobsClient)
+			EngineVersion testEngine) : base(jobsClient)
 		{
 			this.instanceClient = instanceClient ?? throw new ArgumentNullException(nameof(instanceClient));
 			dreamMakerClient = instanceClient.DreamMaker;
@@ -56,8 +59,69 @@ namespace Tgstation.Server.Tests.Live.Instance
 			Assert.IsTrue(deployJob.ErrorCode == ErrorCode.RepoCloning || deployJob.ErrorCode == ErrorCode.RepoMissing);
 
 			var dmSettings = await dreamMakerClient.Read(cancellationToken);
+#pragma warning disable CS0618 // Type or member is obsolete
 			Assert.AreEqual(true, dmSettings.RequireDMApiValidation);
+#pragma warning restore CS0618 // Type or member is obsolete
+			Assert.AreEqual(DMApiValidationMode.Required, dmSettings.DMApiValidationMode);
 			Assert.AreEqual(null, dmSettings.ProjectName);
+
+			// test legacy back and forth
+			dmSettings = await dreamMakerClient.Update(new DreamMakerRequest
+			{
+				DMApiValidationMode = DMApiValidationMode.Optional,
+			}, cancellationToken);
+			Assert.AreEqual(DMApiValidationMode.Optional, dmSettings.DMApiValidationMode);
+#pragma warning disable CS0618 // Type or member is obsolete
+			Assert.AreEqual(false, dmSettings.RequireDMApiValidation);
+#pragma warning restore CS0618 // Type or member is obsolete
+
+			dmSettings = await dreamMakerClient.Update(new DreamMakerRequest
+			{
+				DMApiValidationMode = DMApiValidationMode.Skipped,
+			}, cancellationToken);
+			Assert.AreEqual(DMApiValidationMode.Skipped, dmSettings.DMApiValidationMode);
+#pragma warning disable CS0618 // Type or member is obsolete
+			Assert.AreEqual(false, dmSettings.RequireDMApiValidation);
+#pragma warning restore CS0618 // Type or member is obsolete
+
+			dmSettings = await dreamMakerClient.Update(new DreamMakerRequest
+			{
+				DMApiValidationMode = DMApiValidationMode.Required,
+			}, cancellationToken);
+			Assert.AreEqual(DMApiValidationMode.Required, dmSettings.DMApiValidationMode);
+#pragma warning disable CS0618 // Type or member is obsolete
+			Assert.AreEqual(true, dmSettings.RequireDMApiValidation);
+#pragma warning restore CS0618 // Type or member is obsolete
+
+			dmSettings = await dreamMakerClient.Update(new DreamMakerRequest
+			{
+#pragma warning disable CS0618 // Type or member is obsolete
+				RequireDMApiValidation = false,
+#pragma warning restore CS0618 // Type or member is obsolete
+			}, cancellationToken);
+			Assert.AreEqual(DMApiValidationMode.Optional, dmSettings.DMApiValidationMode);
+#pragma warning disable CS0618 // Type or member is obsolete
+			Assert.AreEqual(false, dmSettings.RequireDMApiValidation);
+#pragma warning restore CS0618 // Type or member is obsolete
+
+			dmSettings = await dreamMakerClient.Update(new DreamMakerRequest
+			{
+#pragma warning disable CS0618 // Type or member is obsolete
+				RequireDMApiValidation = true,
+#pragma warning restore CS0618 // Type or member is obsolete
+			}, cancellationToken);
+			Assert.AreEqual(DMApiValidationMode.Required, dmSettings.DMApiValidationMode);
+#pragma warning disable CS0618 // Type or member is obsolete
+			Assert.AreEqual(true, dmSettings.RequireDMApiValidation);
+#pragma warning restore CS0618 // Type or member is obsolete
+
+			await ApiAssert.ThrowsException<ApiConflictException, DreamMakerResponse>(() => dreamMakerClient.Update(new DreamMakerRequest
+			{
+#pragma warning disable CS0618 // Type or member is obsolete
+				RequireDMApiValidation = true,
+				DMApiValidationMode = DMApiValidationMode.Required,
+#pragma warning restore CS0618 // Type or member is obsolete
+			}, cancellationToken), ErrorCode.ModelValidationFailure);
 		}
 
 		async ValueTask CheckDreamDaemonPriority(Task deploymentJobWaitTask, CancellationToken cancellationToken)
@@ -65,7 +129,7 @@ namespace Tgstation.Server.Tests.Live.Instance
 			// this doesn't check dm's priority, but it really should
 			while (!deploymentJobWaitTask.IsCompleted)
 			{
-				var allProcesses = TestLiveServer.GetEngineServerProcessesOnPort(testEngine, dmPort);
+				var allProcesses = TestLiveServer.GetEngineServerProcessesOnPort(testEngine.Engine.Value, dmPort);
 				if (allProcesses.Count == 0)
 					continue;
 
@@ -125,17 +189,25 @@ namespace Tgstation.Server.Tests.Live.Instance
 				{
 					ProjectName = "tests/DMAPI/ApiFree/api_free",
 					ApiValidationPort = dmPort,
+					CompilerAdditionalArguments = "   ",
 				}, cancellationToken);
 				Assert.AreEqual(dmPort, updatedDM.ApiValidationPort);
 				Assert.AreEqual("tests/DMAPI/ApiFree/api_free", updatedDM.ProjectName);
+				Assert.IsNull(updatedDM.CompilerAdditionalArguments);
 			}
 			else
 			{
+				var canUseDashD = testEngine.Engine == EngineType.Byond && testEngine.Version >= new Version(515, 1597);
 				var updatedDM = await dreamMakerClient.Update(new DreamMakerRequest
 				{
-					ApiValidationPort = dmPort
+					ApiValidationPort = dmPort,
+					CompilerAdditionalArguments = canUseDashD ? " -DBABABOOEY" : "     ",
 				}, cancellationToken);
 				Assert.AreEqual(dmPort, updatedDM.ApiValidationPort);
+				if (canUseDashD)
+					Assert.AreEqual("-DBABABOOEY", updatedDM.CompilerAdditionalArguments);
+				else
+					Assert.IsNull(updatedDM.CompilerAdditionalArguments);
 			}
 
 			Console.WriteLine($"PORT REUSE BUG 1: Setting I-{instanceClient.Metadata.Id} DD to {ddPort}");
@@ -191,6 +263,27 @@ namespace Tgstation.Server.Tests.Live.Instance
 
 			deployJob = await dreamMakerClient.Compile(cancellationToken);
 			await WaitForJob(deployJob, 40, true, ErrorCode.DeploymentMissingDme, cancellationToken);
+
+			// set to an absolute path that does exist
+			var tempFile = Path.GetTempFileName().Replace('\\', '/');
+			try
+			{
+				// for testing purposes, assume same drive for windows
+				var relativePath = $"../../{String.Join("/", instanceClient.Metadata.Path.Replace('\\', '/').Where(pathChar => pathChar == '/').Select(x => ".."))}{tempFile.Substring(tempFile.IndexOf('/'))}";
+				var dmePath = $"{tempFile}.dme";
+				File.Move(tempFile, dmePath);
+				tempFile = dmePath;
+				await dreamMakerClient.Update(new DreamMakerRequest
+				{
+					ProjectName = relativePath
+				}, cancellationToken);
+				deployJob = await dreamMakerClient.Compile(cancellationToken);
+				await WaitForJob(deployJob, 40, true, ErrorCode.DeploymentWrongDme, cancellationToken);
+			}
+			finally
+			{
+				File.Delete(tempFile);
+			}
 
 			// check that we can change the visibility
 

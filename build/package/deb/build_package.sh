@@ -18,8 +18,9 @@ apt-get install -y \
     devscripts \
     ca-certificates \
     curl \
-    gnupg \
-    xmlstarlet
+    gnupg2 \
+    xmlstarlet \
+    libgdiplus
 
 declare repo_version=$(if command -v lsb_release &> /dev/null; then lsb_release -r -s; else grep -oP '(?<=^VERSION_ID=).+' /etc/os-release | tr -d '"'; fi)
 curl -L https://packages.microsoft.com/config/ubuntu/$repo_version/packages-microsoft-prod.deb -o packages-microsoft-prod.deb
@@ -33,6 +34,8 @@ export NODE_MAJOR=20
 echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_$NODE_MAJOR.x nodistro main" | tee /etc/apt/sources.list.d/nodesource.list
 apt-get update
 apt-get install nodejs dotnet-sdk-8.0 -y
+
+corepack enable
 
 CURRENT_COMMIT=$(git rev-parse HEAD)
 
@@ -56,7 +59,11 @@ dh_make -p tgstation-server_$TGS_VERSION -y --createorig -s
 rm -f debian/README* debian/changelog debian/*.ex debian/upstream/*.ex
 
 pushd ..
-dotnet run -c Release -p:TGS_HOST_NO_WEBPANEL=true --project tools/Tgstation.Server.ReleaseNotes $TGS_VERSION --debian packaging/debian/changelog $CURRENT_COMMIT
+if [[ -z "$RELEASE_NOTES_DLL_PATH" ]]; then
+    dotnet run -c Release -p:TGS_HOST_NO_WEBPANEL=true --project tools/Tgstation.Server.ReleaseNotes $TGS_VERSION --debian packaging/debian/changelog $CURRENT_COMMIT
+else
+    dotnet $RELEASE_NOTES_DLL_PATH $TGS_VERSION --debian packaging/debian/changelog $CURRENT_COMMIT
+fi
 popd
 
 cp -r build/package/deb/debian/* debian/
@@ -66,7 +73,6 @@ cp build/tgstation-server.service debian/
 SIGN_COMMAND="$SCRIPT_DIR/wrap_gpg.sh"
 
 rm -f /tmp/tgs_wrap_gpg_output.log
-
 set +e
 
 if [[ -z "$PACKAGING_KEYGRIP" ]]; then

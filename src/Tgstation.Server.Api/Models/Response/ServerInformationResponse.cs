@@ -29,6 +29,11 @@ namespace Tgstation.Server.Api.Models.Response
 		public bool WindowsHost { get; set; }
 
 		/// <summary>
+		/// Map of <see cref="OAuthProvider"/> to the <see cref="OAuthProviderInfo"/> for them.
+		/// </summary>
+		public Dictionary<OAuthProvider, OAuthProviderInfo>? OAuthProviderInfos { get; set; }
+
+		/// <summary>
 		/// If there is a server update in progress.
 		/// </summary>
 		public bool UpdateInProgress { get; set; }
@@ -38,10 +43,5 @@ namespace Tgstation.Server.Api.Models.Response
 		/// </summary>
 		[ResponseOptions]
 		public ICollection<SwarmServerResponse>? SwarmServers { get; set; }
-
-		/// <summary>
-		/// Map of <see cref="OAuthProvider"/> to the <see cref="OAuthProviderInfo"/> for them.
-		/// </summary>
-		public IDictionary<OAuthProvider, OAuthProviderInfo>? OAuthProviderInfos { get; set; }
 	}
 }

@@ -17,10 +17,44 @@ namespace Tgstation.Server.Host.System
 		public int Id { get; }
 
 		/// <inheritdoc />
+		public DateTimeOffset? LaunchTime
+		{
+			get
+			{
+				try
+				{
+					return handle.StartTime;
+				}
+				catch (Exception ex)
+				{
+					logger.LogWarning(ex, "Failed to get PID {pid}'s memory usage!", Id);
+					return null;
+				}
+			}
+		}
+
+		/// <inheritdoc />
 		public Task Startup { get; }
 
 		/// <inheritdoc />
 		public Task<int?> Lifetime { get; }
+
+		/// <inheritdoc />
+		public long? MemoryUsage
+		{
+			get
+			{
+				try
+				{
+					return handle.PrivateMemorySize64;
+				}
+				catch (Exception ex)
+				{
+					logger.LogWarning(ex, "Failed to get PID {pid}'s memory usage!", Id);
+					return null;
+				}
+			}
+		}
 
 		/// <summary>
 		/// The <see cref="IProcessFeatures"/> for the <see cref="Process"/>.

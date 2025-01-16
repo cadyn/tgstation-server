@@ -12,7 +12,7 @@
 		RepoResetOrigin,
 
 		/// <summary>
-		/// Parameters: Checkout target.
+		/// Parameters: Checkout target, hard reset flag (If "True", this is actually a hard reset, not a checkout).
 		/// </summary>
 		[EventScript("RepoCheckout")]
 		RepoCheckout,
@@ -55,7 +55,7 @@
 		EngineActiveVersionChange,
 
 		/// <summary>
-		/// After the repo is copied, before CodeModifications are applied. Parameters: Game directory path, origin commit sha, engine version string.
+		/// After the repo is copied, before CodeModifications are applied. Parameters: Game directory path, origin commit sha, engine version string, repository reference (or "(no branch)" if there is no reference).
 		/// </summary>
 		[EventScript("PreCompile")]
 		CompileStart,

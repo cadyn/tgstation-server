@@ -20,7 +20,7 @@ using Newtonsoft.Json;
 using Octokit;
 using Octokit.GraphQL;
 
-using Tgstation.Server.Host.Extensions.Converters;
+using Tgstation.Server.Shared;
 
 using YamlDotNet.Serialization;
 
@@ -32,8 +32,11 @@ namespace Tgstation.Server.ReleaseNotes
 	static class Program
 	{
 		const string OutputPath = "release_notes.md";
+
+		// some stuff that should be abstracted for different repos
 		const string RepoOwner = "tgstation";
 		const string RepoName = "tgstation-server";
+		const int AppId = 847638;
 
 		/// <summary>
 		/// The entrypoint for the <see cref="Program"/>
@@ -88,8 +91,11 @@ namespace Tgstation.Server.ReleaseNotes
 					case "--NO-CLOSE":
 						doNotCloseMilestone = true;
 						break;
-					case "--HTTPAPI":
+					case "--RESTAPI":
 						componentRelease = Component.HttpApi;
+						break;
+					case "--GRAPHQLAPI":
+						componentRelease = Component.GraphQLApi;
 						break;
 					case "--INTEROPAPI":
 						componentRelease = Component.InteropApi;
@@ -99,6 +105,7 @@ namespace Tgstation.Server.ReleaseNotes
 						break;
 				}
 
+			var client = new GitHubClient(new Octokit.ProductHeaderValue("tgs_release_notes"));
 			const string ReleaseNotesEnvVar = "TGS_RELEASE_NOTES_TOKEN";
 			var githubToken = Environment.GetEnvironmentVariable(ReleaseNotesEnvVar);
 			if (String.IsNullOrWhiteSpace(githubToken) && !doNotCloseMilestone && !ensureRelease)
@@ -107,7 +114,6 @@ namespace Tgstation.Server.ReleaseNotes
 				return 3;
 			}
 
-			var client = new GitHubClient(new Octokit.ProductHeaderValue("tgs_release_notes"));
 			if (!String.IsNullOrWhiteSpace(githubToken))
 			{
 				client.Credentials = new Credentials(githubToken);
@@ -131,7 +137,7 @@ namespace Tgstation.Server.ReleaseNotes
 
 				if (shaCheck)
 				{
-					if(args.Length < 2)
+					if (args.Length < 2)
 					{
 						Console.WriteLine("Missing SHA for PR template!");
 						return 32;
@@ -242,7 +248,8 @@ namespace Tgstation.Server.ReleaseNotes
 					return 10;
 				}
 
-				var apiVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsApiVersion").Value);
+				var restVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsRestVersion").Value);
+				var graphQLVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsGraphQLVersion").Value);
 				var configVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsConfigVersion").Value);
 				var dmApiVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsDmapiVersion").Value);
 				var interopVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsInteropVersion").Value);
@@ -252,7 +259,7 @@ namespace Tgstation.Server.ReleaseNotes
 				if (webControlVersion.Major == 0)
 					postControlPanelMessage = true;
 
-				prefix = $"Please refer to the [README](https://github.com/tgstation/tgstation-server#setup) for setup instructions. Full changelog can be found [here](https://raw.githubusercontent.com/tgstation/tgstation-server/gh-pages/changelog.yml).{Environment.NewLine}{Environment.NewLine}#### Component Versions\nCore: {coreVersion}\nConfiguration: {configVersion}\nHTTP API: {apiVersion}\nDreamMaker API: {dmApiVersion} (Interop: {interopVersion})\n[Web Control Panel](https://github.com/tgstation/tgstation-server-webpanel): {webControlVersion}\nHost Watchdog: {hostWatchdogVersion}";
+				prefix = $"Please refer to the [README](https://github.com/tgstation/tgstation-server#setup) for setup instructions. Full changelog can be found [here](https://raw.githubusercontent.com/tgstation/tgstation-server/gh-pages/changelog.yml).{Environment.NewLine}{Environment.NewLine}#### Component Versions\nCore: {coreVersion}\nConfiguration: {configVersion}\nREST API: {restVersion}\nGraphQL API{(graphQLVersion.Major < 1 ? " (Pre-release)" : String.Empty)}: {graphQLVersion}\nDreamMaker API: {dmApiVersion} (Interop: {interopVersion})\n[Web Control Panel](https://github.com/tgstation/tgstation-server-webpanel): {webControlVersion}\nHost Watchdog: {hostWatchdogVersion}";
 
 				var newNotes = new StringBuilder(prefix);
 				if (postControlPanelMessage)
@@ -308,6 +315,39 @@ namespace Tgstation.Server.ReleaseNotes
 							Description = "Next patch version"
 						});
 
+
+					async ValueTask RelocateOpenIssues(Milestone originalMilestone, int moveToMilestoneNumber)
+					{
+						if (originalMilestone.OpenIssues + originalMilestone.ClosedIssues > 0)
+						{
+							var issuesInUnusedMilestone = await client.Search.SearchIssues(new SearchIssuesRequest
+							{
+								Milestone = originalMilestone.Title,
+								Repos = { { RepoOwner, RepoName } }
+							});
+
+							var issueUpdateTasks = new List<Task>();
+							foreach (var I in issuesInUnusedMilestone.Items)
+							{
+								if (I.State.Value != ItemState.Closed)
+									issueUpdateTasks.Add(client.Issue.Update(RepoOwner, RepoName, I.Number, new IssueUpdate
+									{
+										Milestone = moveToMilestoneNumber
+									}));
+
+								if (I.PullRequest != null && I.PullRequest.Merged)
+								{
+									Console.WriteLine($"Adding additional merged PR #{I.Number}...");
+									var task = GetReleaseNotesFromPR(client, I, doNotCloseMilestone, false, false);
+									noteTasks.Add(task);
+									allTasks.Add(task);
+								}
+							}
+
+							await Task.WhenAll(issueUpdateTasks).ConfigureAwait(false);
+						}
+					}
+
 					if (version.Build == 0)
 					{
 						// close the patch milestone if it exists
@@ -319,38 +359,9 @@ namespace Tgstation.Server.ReleaseNotes
 						async ValueTask DeleteMilestone(Milestone milestoneToDelete, int moveToMilestoneNumber)
 						{
 							Console.WriteLine($"Moving {milestoneToDelete.OpenIssues} open issues and {milestoneToDelete.ClosedIssues} closed issues from unused patch milestone {milestoneToDelete.Title} to upcoming ones and deleting...");
-							if (milestoneToDelete.OpenIssues + milestoneToDelete.ClosedIssues > 0)
-							{
-								var issuesInUnusedMilestone = await client.Search.SearchIssues(new SearchIssuesRequest
-								{
-									Milestone = milestoneToDelete.Title,
-									Repos = { { RepoOwner, RepoName } }
-								});
-
-								var issueUpdateTasks = new List<Task>();
-								foreach (var I in issuesInUnusedMilestone.Items)
-								{
-									if (I.State.Value != ItemState.Closed)
-										issueUpdateTasks.Add(client.Issue.Update(RepoOwner, RepoName, I.Number, new IssueUpdate
-										{
-											Milestone = moveToMilestoneNumber
-										}));
-
-									if (I.PullRequest != null)
-									{
-										Console.WriteLine($"Adding additional merged PR #{I.Number}...");
-										var task = GetReleaseNotesFromPR(client, I, doNotCloseMilestone, false, false);
-										noteTasks.Add(task);
-										allTasks.Add(task);
-									}
-								}
-
-								await Task.WhenAll(issueUpdateTasks).ConfigureAwait(false);
-							}
-
+							await RelocateOpenIssues(milestoneToDelete, moveToMilestoneNumber);
 							allTasks.Add(client.Issue.Milestone.Delete(RepoOwner, RepoName, milestoneToDelete.Number));
 						}
-
 
 						var unreleasedNextPatchMilestone = milestones.FirstOrDefault(x => x.Title.StartsWith($"v{highestReleaseVersion.Major}.{highestReleaseVersion.Minor}."));
 						if (unreleasedNextPatchMilestone != null)
@@ -394,7 +405,11 @@ namespace Tgstation.Server.ReleaseNotes
 							if (unreleasedNextMinorMilestone != null)
 								await DeleteMilestone(unreleasedNextMinorMilestone, nextMinorMilestone.Number);
 						}
+						else
+							await RelocateOpenIssues(milestone, nextMinorMilestone.Number);
 					}
+					else
+						await RelocateOpenIssues(milestone, nextPatchMilestone.Number);
 				}
 
 				newNotes.Append(milestone.HtmlUrl);
@@ -406,7 +421,8 @@ namespace Tgstation.Server.ReleaseNotes
 				var componentVersionDict = new Dictionary<Component, Version>
 				{
 					{ Component.Configuration, configVersion },
-					{ Component.HttpApi, apiVersion },
+					{ Component.HttpApi, restVersion },
+					{ Component.GraphQLApi, graphQLVersion },
 					{ Component.DreamMakerApi, dmApiVersion },
 					{ Component.InteropApi, interopVersion },
 					{ Component.WebControlPanel, webControlVersion },
@@ -505,7 +521,8 @@ namespace Tgstation.Server.ReleaseNotes
 
 		static string GetComponentDisplayName(Component component, bool debian) => component switch
 		{
-			Component.HttpApi => debian ? "the HTTP API" : "HTTP API",
+			Component.HttpApi => debian ? "the REST API" : "REST API",
+			Component.GraphQLApi => debian ? "the GraphQL API" : "GraphQL API",
 			Component.InteropApi => debian ? "the Interop API" : "Interop API",
 			Component.Configuration => debian ? "the TGS configuration" : "**Configuration**",
 			Component.DreamMakerApi => debian ? "the DreamMaker API" : "DreamMaker API",
@@ -604,7 +621,8 @@ namespace Tgstation.Server.ReleaseNotes
 				var dict = new Dictionary<Component, Version>
 				{
 					{ Component.Core, Parse("TgsCoreVersion") },
-					{ Component.HttpApi, Parse("TgsApiVersion") },
+					{ Component.HttpApi, Parse("TgsRestVersion") },
+					{ Component.GraphQLApi, Parse("TgsGraphQLVersion") },
 					{ Component.DreamMakerApi, Parse("TgsDmapiVersion") },
 				};
 
@@ -713,11 +731,12 @@ namespace Tgstation.Server.ReleaseNotes
 					}
 					if (trimmedLine.StartsWith("/:cl:", StringComparison.Ordinal) || trimmedLine.StartsWith("/🆑", StringComparison.Ordinal))
 					{
-						if(!Enum.TryParse<Component>(targetComponent, out var component))
+						if (!Enum.TryParse<Component>(targetComponent, out var component))
 							component = targetComponent.ToUpperInvariant() switch
 							{
 								"**CONFIGURATION**" or "CONFIGURATION" or "CONFIG" => Component.Configuration,
-								"HTTP API" => Component.HttpApi,
+								"HTTP API" or "REST API" => Component.HttpApi,
+								"GQL API" or "GRAPHQL API" or "GQL" or "GRAPHQL" => Component.GraphQLApi,
 								"WEB CONTROL PANEL" => Component.WebControlPanel,
 								"DMAPI" or "DREAMMAKER API" => Component.DreamMakerApi,
 								"INTEROP API" => Component.InteropApi,
@@ -788,24 +807,30 @@ namespace Tgstation.Server.ReleaseNotes
 			var versionsPropertyGroup = project.Elements().First(x => x.Name == xmlNamespace + "PropertyGroup");
 			var coreVersion = Version.Parse(versionsPropertyGroup.Element(xmlNamespace + "TgsCoreVersion").Value);
 
-			const string BodyForPRSha = "bec143988b4b8ddeb586ed97aaf0647803110d98";
+			const string BodyForPRSha = "88f8f016fc9e79ac66d69d6656409f7d6aac5dcf";
 			var prBody = $@"# Automated Pull Request
 
 This pull request was generated by our [deployment pipeline]({actionUrl}) as a result of the release of [tgstation-server-v{coreVersion}](https://github.com/tgstation/tgstation-server/releases/tag/tgstation-server-v{coreVersion}). Validation was performed as part of the process.
 
 The user account that created this pull request is available to correct any issues.
 
+Checklist for Pull Requests
 - [x] Have you signed the [Contributor License Agreement](https://cla.opensource.microsoft.com/microsoft/winget-pkgs)?
-- [x] Have you checked that there aren't other open [pull requests](https://github.com/microsoft/winget-pkgs/pulls) for the same manifest update/change?
-  - This PR is generated as a direct result of a new release of `tgstation-server` this should be impossible
-- [x] This PR only modifies one (1) manifest
-- [x] Have you [validated](https://github.com/microsoft/winget-pkgs/blob/master/AUTHORING_MANIFESTS.md#validation) your manifest locally with `winget validate --manifest <path>`?
-  - Validation is performed as a prerequisite to deployment.
-- [x] Have you tested your manifest locally with `winget install --manifest <path>`?
-  - Manifest installation and uninstallation is performed as a prerequisite to deployment.
-- [x] Does your manifest conform to the [1.6 schema](https://github.com/microsoft/winget-pkgs/tree/master/doc/manifest/schema/1.6.0)?
+- [x] Is there a linked Issue? **No**
 
-###### Microsoft Reviewers: [Open in CodeFlow](https://microsoft.github.io/open-pr/?codeflow=https://github.com/microsoft/winget-pkgs/pull/$PR_NUMBER_SUBST$)";
+Manifests
+- [x] Have you checked that there aren't other open [pull requests](https://github.com/microsoft/winget-pkgs/pulls) for the same manifest update/change? **Impossible**
+- [x] This PR only modifies one (1) manifest
+- [x] Have you [validated](https://github.com/microsoft/winget-pkgs/blob/master/doc/Authoring.md#validation) your manifest locally with `winget validate --manifest <path>`?
+- [x] Have you tested your manifest locally with `winget install --manifest <path>`?
+- [x] Does your manifest conform to the [1.9 schema](https://github.com/microsoft/winget-pkgs/tree/master/doc/manifest/schema/1.9.0)?
+
+Note: `<path>` is the directory's name containing the manifest you're submitting.
+
+###### Microsoft Reviewers: [Open in CodeFlow](https://microsoft.github.io/open-pr/?codeflow=https://github.com/microsoft/winget-pkgs/pull/$PR_NUMBER_SUBST$)
+
+---
+";
 
 			if (expectedTemplateSha != null)
 			{
@@ -833,7 +858,7 @@ The user account that created this pull request is available to correct any issu
 			});
 
 			var prToModify = userPrsOnWingetRepo.Items.OrderByDescending(pr => pr.Number).FirstOrDefault();
-			if(prToModify == null)
+			if (prToModify == null)
 			{
 				Console.WriteLine("Could not find open winget-pkgs PR!");
 				return 31;
@@ -956,7 +981,7 @@ The user account that created this pull request is available to correct any issu
 							.GroupBy(kvp => kvp.Key)
 							.Select(grouping => new KeyValuePair<Component, Version>(grouping.Key, grouping.Max(kvp => kvp.Value))));
 
-					foreach(var maxVersionKvp in prResults.SelectMany(x => x.Item1)
+					foreach (var maxVersionKvp in prResults.SelectMany(x => x.Item1)
 						.Where(x => !releasedComponentVersions.ContainsKey(x.Key))
 						.GroupBy(x => x.Key)
 						.Select(group => {
@@ -982,7 +1007,7 @@ The user account that created this pull request is available to correct any issu
 					var component = componentKvp.Key;
 					var list = new List<Changelist>();
 
-					foreach(var changelistDict in prResults.Select(x => x.Item1))
+					foreach (var changelistDict in prResults.Select(x => x.Item1))
 					{
 						if (!changelistDict.TryGetValue(component, out var changelist))
 							continue;
@@ -1086,7 +1111,7 @@ The user account that created this pull request is available to correct any issu
 			return 0;
 		}
 
-		static readonly HttpClient httpClient = new (
+		static readonly HttpClient httpClient = new(
 			new HttpClientHandler()
 			{
 				AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate
@@ -1135,7 +1160,8 @@ The user account that created this pull request is available to correct any issu
 				release => release.Id);
 
 			var milestones = await TripleCheckGitHubPagination(
-				apiOptions => client.Issue.Milestone.GetAllForRepository(RepoOwner, RepoName, new MilestoneRequest {
+				apiOptions => client.Issue.Milestone.GetAllForRepository(RepoOwner, RepoName, new MilestoneRequest
+				{
 					State = ItemStateFilter.All
 				}, apiOptions),
 				milestone => milestone.Id);
@@ -1150,15 +1176,23 @@ The user account that created this pull request is available to correct any issu
 			var nugetApiVersions = EnumerateNugetVersions("Tgstation.Server.Api");
 			var nugetClientVersions = EnumerateNugetVersions("Tgstation.Server.Client");
 
+			const string ApiTagPrefix = "api-v";
+			const string GraphQLTagPrefix = "graphql-v";
+			const string DMApiTagPrefix = "dmapi-v";
 			var newDic = new Dictionary<Component, IReadOnlySet<Version>> {
 				{ Component.HttpApi, releases
-					.Where(x => x.TagName.StartsWith("api-v"))
-					.Select(x => Version.Parse(x.TagName[5..]))
+					.Where(x => x.TagName.StartsWith(ApiTagPrefix))
+					.Select(x => Version.Parse(x.TagName[ApiTagPrefix.Length..]))
+					.OrderBy(x => x)
+					.ToHashSet() },
+				{ Component.GraphQLApi, releases
+					.Where(x => x.TagName.StartsWith(GraphQLTagPrefix))
+					.Select(x => Version.Parse(x.TagName[GraphQLTagPrefix.Length..]))
 					.OrderBy(x => x)
 					.ToHashSet() },
 				{ Component.DreamMakerApi, releases
-					.Where(x => x.TagName.StartsWith("dmapi-v"))
-					.Select(x => Version.Parse(x.TagName[7..]))
+					.Where(x => x.TagName.StartsWith(DMApiTagPrefix))
+					.Select(x => Version.Parse(x.TagName[DMApiTagPrefix.Length..]))
 					.OrderBy(x => x)
 					.ToHashSet() },
 				{ Component.NugetCommon, await nugetCommonVersions },
@@ -1343,7 +1377,7 @@ The user account that created this pull request is available to correct any issu
 				PrintChanges(newNotes, relevantChangelog);
 			}
 
-			if(component == Component.DreamMakerApi)
+			if (component == Component.DreamMakerApi)
 			{
 				newNotes.AppendLine();
 				newNotes.AppendLine("#tgs-dmapi-release");
@@ -1393,7 +1427,7 @@ The user account that created this pull request is available to correct any issu
 				{ Component.NugetClient, "Client" },
 			};
 
-			foreach(var kvp in csprojNameMap)
+			foreach (var kvp in csprojNameMap)
 			{
 				var component = kvp.Key;
 				var csprojPath = CsprojSubstitution.Replace("$PROJECT$", kvp.Value);
@@ -1470,10 +1504,10 @@ package (version) distribution(s); urgency=urgency
 							|| component == Component.NugetCommon)
 							continue;
 
-						var takeNotesFrom = previousRelease.ComponentVersions[componentKvp.Key];
+						var hasPreviousRelease = previousRelease.ComponentVersions.TryGetValue(componentKvp.Key, out var takeNotesFrom);
 						var changesEnumerator = releaseNotes
 							.Components[component]
-							.Where(changelist => changelist.Version > takeNotesFrom && changelist.Version <= componentKvp.Value)
+							.Where(changelist => !hasPreviousRelease || (changelist.Version > takeNotesFrom && changelist.Version <= componentKvp.Value))
 							.SelectMany(x => x.Changes)
 							.OrderBy(x => x.PullRequest);
 						var changelist = new Changelist
@@ -1531,7 +1565,7 @@ package (version) distribution(s); urgency=urgency
 					builder.AppendLine();
 					builder.Append("  * The following changes are for ");
 					builder.Append(GetComponentDisplayName(kvp.Key, true));
-					if(kvp.Key == Component.Configuration)
+					if (kvp.Key == Component.Configuration)
 					{
 						builder.Append(". You ");
 						if (kvp.Value.Version.Minor == 0 && kvp.Value.Version.Build == 0)

@@ -118,14 +118,18 @@ namespace Tgstation.Server.Host.Components.Engine
 		public override Task CleanCache(CancellationToken cancellationToken) => Task.CompletedTask;
 
 		/// <inheritdoc />
-		public override IEngineInstallation CreateInstallation(EngineVersion version, string path, Task installationTask)
+		public override async ValueTask<IEngineInstallation> CreateInstallation(EngineVersion version, string path, Task installationTask, CancellationToken cancellationToken)
 		{
 			CheckVersionValidity(version);
 			GetExecutablePaths(path, out var serverExePath, out var compilerExePath);
+
+			var dotnetPath = (await DotnetHelper.GetDotnetPath(platformIdentifier, IOManager, cancellationToken))
+				?? throw new JobException("Failed to find dotnet path!");
 			return new OpenDreamInstallation(
 				new ResolvingIOManager(IOManager, path),
 				asyncDelayer,
 				httpClientFactory,
+				dotnetPath,
 				serverExePath,
 				compilerExePath,
 				installationTask,
@@ -133,23 +137,32 @@ namespace Tgstation.Server.Host.Components.Engine
 		}
 
 		/// <inheritdoc />
-		public override async ValueTask<IEngineInstallationData> DownloadVersion(EngineVersion version, JobProgressReporter? jobProgressReporter, CancellationToken cancellationToken)
+		public override async ValueTask<IEngineInstallationData> DownloadVersion(EngineVersion version, JobProgressReporter jobProgressReporter, CancellationToken cancellationToken)
 		{
 			CheckVersionValidity(version);
+			ArgumentNullException.ThrowIfNull(jobProgressReporter);
 
 			// get a lock on a system wide OD repo
 			Logger.LogTrace("Cloning OD repo...");
 
-			var progressSection1 = jobProgressReporter?.CreateSection("Updating OpenDream git repository", 0.5f);
-
-			var repo = await repositoryManager.CloneRepository(
-				GeneralConfiguration.OpenDreamGitUrl,
-				null,
-				null,
-				null,
-				progressSection1,
-				true,
-				cancellationToken);
+			var progressSection1 = jobProgressReporter.CreateSection("Updating OpenDream git repository", 0.5f);
+			IRepository? repo;
+			try
+			{
+				repo = await repositoryManager.CloneRepository(
+					GeneralConfiguration.OpenDreamGitUrl,
+					null,
+					null,
+					null,
+					progressSection1,
+					true,
+					cancellationToken);
+			}
+			catch
+			{
+				progressSection1.Dispose();
+				throw;
+			}
 
 			try
 			{
@@ -157,6 +170,8 @@ namespace Tgstation.Server.Host.Components.Engine
 				{
 					Logger.LogTrace("OD repo seems to already exist, attempting load and fetch...");
 					repo = await repositoryManager.LoadRepository(cancellationToken);
+					if (repo == null)
+						throw new JobException("Can't load OpenDream repository! Please delete cache from disk!");
 
 					await repo!.FetchOrigin(
 						progressSection1,
@@ -166,18 +181,23 @@ namespace Tgstation.Server.Host.Components.Engine
 						cancellationToken);
 				}
 
-				var progressSection2 = jobProgressReporter?.CreateSection("Checking out OpenDream version", 0.5f);
+				progressSection1.Dispose();
+				progressSection1 = null;
 
-				var committish = version.SourceSHA
-					?? $"{GeneralConfiguration.OpenDreamGitTagPrefix}{version.Version!.Semver()}";
+				using (var progressSection2 = jobProgressReporter.CreateSection("Checking out OpenDream version", 0.5f))
+				{
+					var committish = version.SourceSHA
+						?? $"{GeneralConfiguration.OpenDreamGitTagPrefix}{version.Version!.Semver()}";
 
-				await repo.CheckoutObject(
-					committish,
-					null,
-					null,
-					true,
-					progressSection2,
-					cancellationToken);
+					await repo.CheckoutObject(
+						committish,
+						null,
+						null,
+						true,
+						false,
+						progressSection2,
+						cancellationToken);
+				}
 
 				if (!await repo.CommittishIsParent("tgs-min-compat", cancellationToken))
 					throw new JobException(ErrorCode.OpenDreamTooOld);
@@ -188,6 +208,10 @@ namespace Tgstation.Server.Host.Components.Engine
 			{
 				repo?.Dispose();
 				throw;
+			}
+			finally
+			{
+				progressSection1?.Dispose();
 			}
 		}
 
@@ -231,20 +255,19 @@ namespace Tgstation.Server.Host.Components.Engine
 				await Task.WhenAll(dirsMoveTasks.Concat(filesMoveTask));
 			}
 
-			var dotnetPath = await DotnetHelper.GetDotnetPath(platformIdentifier, IOManager, cancellationToken);
-			if (dotnetPath == null)
-				throw new JobException(ErrorCode.OpenDreamCantFindDotnet);
-
+			var dotnetPath = (await DotnetHelper.GetDotnetPath(platformIdentifier, IOManager, cancellationToken))
+				?? throw new JobException(ErrorCode.OpenDreamCantFindDotnet);
 			const string DeployDir = "tgs_deploy";
 			int? buildExitCode = null;
 			await HandleExtremelyLongPathOperation(
 				async shortenedPath =>
 				{
 					var shortenedDeployPath = IOManager.ConcatPath(shortenedPath, DeployDir);
-					await using var buildProcess = ProcessExecutor.LaunchProcess(
+					await using var buildProcess = await ProcessExecutor.LaunchProcess(
 						dotnetPath,
 						shortenedPath,
 						$"run -c Release --project OpenDreamPackageTool -- --tgs -o {shortenedDeployPath}",
+						cancellationToken,
 						null,
 						null,
 						!GeneralConfiguration.OpenDreamSuppressInstallOutput,
@@ -351,21 +374,19 @@ namespace Tgstation.Server.Host.Components.Engine
 		/// <param name="compilerExePath">The path to the DMCompiler executable.</param>
 		protected void GetExecutablePaths(string installationPath, out string serverExePath, out string compilerExePath)
 		{
-			var exeExtension = platformIdentifier.IsWindows
-				? ".exe"
-				: String.Empty;
+			const string DllExtension = ".dll";
 
 			serverExePath = IOManager.ConcatPath(
 				installationPath,
 				BinDir,
 				ServerDir,
-				$"Robust.Server{exeExtension}");
+				$"Robust.Server{DllExtension}");
 
 			compilerExePath = IOManager.ConcatPath(
 				installationPath,
 				BinDir,
 				InstallationCompilerDirectory,
-				$"DMCompiler{exeExtension}");
+				$"DMCompiler{DllExtension}");
 		}
 	}
 }

@@ -326,7 +326,7 @@ namespace Tgstation.Server.Host.Components.Deployment
 						likelyPushedTestMergeCommit,
 						cancellationToken);
 
-				var activeCompileJob = compileJobConsumer.LatestCompileJob();
+				var activeCompileJob = await compileJobConsumer.LatestCompileJob();
 				try
 				{
 					await databaseContextFactory.UseContext(
@@ -571,6 +571,7 @@ namespace Tgstation.Server.Host.Components.Deployment
 				progressReporter.StageName = "Copying repository";
 				var resolvedOutputDirectory = ioManager.ResolvePath(outputDirectory);
 				var repoOrigin = repository.Origin;
+				var repoReference = repository.Reference;
 				using (repository)
 					await repository.CopyTo(resolvedOutputDirectory, cancellationToken);
 
@@ -585,6 +586,7 @@ namespace Tgstation.Server.Host.Components.Deployment
 						resolvedOutputDirectory,
 						repoOrigin.ToString(),
 						engineLock.Version.ToString(),
+						repoReference,
 					},
 					true,
 					cancellationToken);
@@ -605,6 +607,9 @@ namespace Tgstation.Server.Host.Components.Deployment
 				else
 				{
 					var targetDme = ioManager.ConcatPath(outputDirectory, String.Join('.', job.DmeName, DmeExtension));
+					if (!await ioManager.PathIsChildOf(outputDirectory, targetDme, cancellationToken))
+						throw new JobException(ErrorCode.DeploymentWrongDme);
+
 					var targetDmeExists = await ioManager.FileExists(targetDme, cancellationToken);
 					if (!targetDmeExists)
 						throw new JobException(ErrorCode.DeploymentMissingDme);
@@ -630,7 +635,7 @@ namespace Tgstation.Server.Host.Components.Deployment
 
 				// run compiler
 				progressReporter.StageName = "Running Compiler";
-				var compileSuceeded = await RunDreamMaker(engineLock, job, cancellationToken);
+				var compileSuceeded = await RunDreamMaker(engineLock, job, dreamMakerSettings.CompilerAdditionalArguments, cancellationToken);
 
 				// Session takes ownership of the lock and Disposes it so save this for later
 				var engineVersion = engineLock.Version;
@@ -643,14 +648,14 @@ namespace Tgstation.Server.Host.Components.Deployment
 							ErrorCode.DeploymentExitCode,
 							new JobException($"Compilation failed:{Environment.NewLine}{Environment.NewLine}{job.Output}"));
 
-					progressReporter.StageName = "Validating DMAPI";
 					await VerifyApi(
 						launchParameters.StartupTimeout!.Value,
 						dreamMakerSettings.ApiValidationSecurityLevel!.Value,
 						job,
+						progressReporter,
 						engineLock,
 						dreamMakerSettings.ApiValidationPort!.Value,
-						dreamMakerSettings.RequireDMApiValidation!.Value,
+						dreamMakerSettings.DMApiValidationMode!.Value,
 						launchParameters.LogOutput!.Value,
 						cancellationToken);
 				}
@@ -762,9 +767,10 @@ namespace Tgstation.Server.Host.Components.Deployment
 		/// <param name="timeout">The timeout in seconds for validation.</param>
 		/// <param name="securityLevel">The <see cref="DreamDaemonSecurity"/> level to use to validate the API.</param>
 		/// <param name="job">The <see cref="CompileJob"/> for the operation.</param>
+		/// <param name="progressReporter">The <see cref="JobProgressReporter"/>.</param>
 		/// <param name="engineLock">The current <see cref="IEngineExecutableLock"/>.</param>
 		/// <param name="portToUse">The port to use for API validation.</param>
-		/// <param name="requireValidate">If the API validation is required to complete the deployment.</param>
+		/// <param name="validationMode">The <see cref="DMApiValidationMode"/>.</param>
 		/// <param name="logOutput">If output should be logged to the DreamDaemon Diagnostics folder.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask"/> representing the running operation.</returns>
@@ -772,17 +778,29 @@ namespace Tgstation.Server.Host.Components.Deployment
 			uint timeout,
 			DreamDaemonSecurity securityLevel,
 			Models.CompileJob job,
+			JobProgressReporter progressReporter,
 			IEngineExecutableLock engineLock,
 			ushort portToUse,
-			bool requireValidate,
+			DMApiValidationMode validationMode,
 			bool logOutput,
 			CancellationToken cancellationToken)
 		{
+			if (validationMode == DMApiValidationMode.Skipped)
+			{
+				logger.LogDebug("Skipping DMAPI validation");
+				job.MinimumSecurityLevel = DreamDaemonSecurity.Ultrasafe;
+				return;
+			}
+
+			progressReporter.StageName = "Validating DMAPI";
+
+			var requireValidate = validationMode == DMApiValidationMode.Required;
 			logger.LogTrace("Verifying {possiblyRequired}DMAPI...", requireValidate ? "required " : String.Empty);
 			var launchParameters = new DreamDaemonLaunchParameters
 			{
 				AllowWebClient = false,
 				Port = portToUse,
+				OpenDreamTopicPort = 0,
 				SecurityLevel = securityLevel,
 				Visibility = DreamDaemonVisibility.Invisible,
 				StartupTimeout = timeout,
@@ -848,18 +866,24 @@ namespace Tgstation.Server.Host.Components.Deployment
 		/// </summary>
 		/// <param name="engineLock">The <see cref="IEngineExecutableLock"/> to use.</param>
 		/// <param name="job">The <see cref="CompileJob"/> for the operation.</param>
+		/// <param name="additionalCompilerArguments">Additional arguments to be added to the compiler.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in <see langword="true"/> if compilation succeeded, <see langword="false"/> otherwise.</returns>
-		async ValueTask<bool> RunDreamMaker(IEngineExecutableLock engineLock, Models.CompileJob job, CancellationToken cancellationToken)
+		async ValueTask<bool> RunDreamMaker(
+			IEngineExecutableLock engineLock,
+			Models.CompileJob job,
+			string? additionalCompilerArguments,
+			CancellationToken cancellationToken)
 		{
 			var environment = await engineLock.LoadEnv(logger, true, cancellationToken);
-			var arguments = engineLock.FormatCompilerArguments($"{job.DmeName}.{DmeExtension}");
+			var arguments = engineLock.FormatCompilerArguments($"{job.DmeName}.{DmeExtension}", additionalCompilerArguments);
 
-			await using var dm = processExecutor.LaunchProcess(
+			await using var dm = await processExecutor.LaunchProcess(
 				engineLock.CompilerExePath,
 				ioManager.ResolvePath(
 					job.DirectoryName!.Value.ToString()),
 				arguments,
+				cancellationToken,
 				environment,
 				readStandardHandles: true,
 				noShellExecute: true);

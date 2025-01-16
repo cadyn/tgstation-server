@@ -1,12 +1,11 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
-
-using BetterWin32Errors;
 
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -107,7 +106,7 @@ namespace Tgstation.Server.Host.System
 			{
 				if (registeredProcesses.Contains(process))
 					throw new InvalidOperationException("This process has already been registered for network prompt reaping!");
-				logger.LogTrace("Registering process {0}...", process.Id);
+				logger.LogTrace("Registering process {pid}...", process.Id);
 				registeredProcesses.Add(process);
 			}
 
@@ -148,7 +147,7 @@ namespace Tgstation.Server.Host.System
 							continue; // not our bitch
 					}
 
-					logger.LogTrace("Identified \"Network Accessibility\" window in owned process {0}", processId);
+					logger.LogTrace("Identified \"Network Accessibility\" window in owned process {pid}", processId);
 
 					var found = false;
 					foreach (var childHandle in GetAllChildHandles(window))
@@ -179,7 +178,7 @@ namespace Tgstation.Server.Host.System
 					}
 
 					if (!found)
-						logger.LogDebug("Unable to find \"Yes\" button for \"Network Accessibility\" window in owned process {0}!", processId);
+						logger.LogDebug("Unable to find \"Yes\" button for \"Network Accessibility\" window in owned process {pid}!", processId);
 				}
 			}
 			catch (OperationCanceledException ex)

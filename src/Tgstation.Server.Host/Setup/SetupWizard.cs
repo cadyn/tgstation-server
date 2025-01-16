@@ -23,11 +23,11 @@ using Npgsql;
 using Tgstation.Server.Common;
 using Tgstation.Server.Host.Configuration;
 using Tgstation.Server.Host.Database;
-using Tgstation.Server.Host.Extensions.Converters;
 using Tgstation.Server.Host.IO;
 using Tgstation.Server.Host.Properties;
 using Tgstation.Server.Host.System;
 using Tgstation.Server.Host.Utils;
+using Tgstation.Server.Shared;
 
 using YamlDotNet.Serialization;
 
@@ -77,6 +77,11 @@ namespace Tgstation.Server.Host.Setup
 		readonly IHostApplicationLifetime applicationLifetime;
 
 		/// <summary>
+		/// The <see cref="IPostSetupServices"/> for the <see cref="SetupWizard"/>.
+		/// </summary>
+		readonly IPostSetupServices postSetupServices;
+
+		/// <summary>
 		/// The <see cref="GeneralConfiguration"/> for the <see cref="SetupWizard"/>.
 		/// </summary>
 		readonly GeneralConfiguration generalConfiguration;
@@ -97,6 +102,7 @@ namespace Tgstation.Server.Host.Setup
 		/// <param name="platformIdentifier">The value of <see cref="platformIdentifier"/>.</param>
 		/// <param name="asyncDelayer">The value of <see cref="asyncDelayer"/>.</param>
 		/// <param name="applicationLifetime">The value of <see cref="applicationLifetime"/>.</param>
+		/// <param name="postSetupServices">The value of <see cref="postSetupServices"/>.</param>
 		/// <param name="generalConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the value of <see cref="generalConfiguration"/>.</param>
 		/// <param name="internalConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the value of <see cref="internalConfiguration"/>.</param>
 		public SetupWizard(
@@ -108,6 +114,7 @@ namespace Tgstation.Server.Host.Setup
 			IPlatformIdentifier platformIdentifier,
 			IAsyncDelayer asyncDelayer,
 			IHostApplicationLifetime applicationLifetime,
+			IPostSetupServices postSetupServices,
 			IOptions<GeneralConfiguration> generalConfigurationOptions,
 			IOptions<InternalConfiguration> internalConfigurationOptions)
 		{
@@ -119,6 +126,7 @@ namespace Tgstation.Server.Host.Setup
 			this.platformIdentifier = platformIdentifier ?? throw new ArgumentNullException(nameof(platformIdentifier));
 			this.asyncDelayer = asyncDelayer ?? throw new ArgumentNullException(nameof(asyncDelayer));
 			this.applicationLifetime = applicationLifetime ?? throw new ArgumentNullException(nameof(applicationLifetime));
+			this.postSetupServices = postSetupServices ?? throw new ArgumentNullException(nameof(postSetupServices));
 
 			generalConfiguration = generalConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(generalConfigurationOptions));
 			internalConfiguration = internalConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(internalConfigurationOptions));
@@ -705,7 +713,7 @@ namespace Tgstation.Server.Host.Setup
 			while (true);
 
 			await console.WriteAsync(null, true, cancellationToken);
-			await console.WriteAsync("Enter a GitHub personal access token to bypass some rate limits (this is optional and does not require any scopes)", true, cancellationToken);
+			await console.WriteAsync("Enter a classic GitHub personal access token to bypass some rate limits (this is optional and does not require any scopes)", true, cancellationToken);
 			await console.WriteAsync("GitHub personal access token: ", false, cancellationToken);
 			newGeneralConfiguration.GitHubAccessToken = await console.ReadLineAsync(true, cancellationToken);
 			if (String.IsNullOrWhiteSpace(newGeneralConfiguration.GitHubAccessToken))
@@ -951,6 +959,31 @@ namespace Tgstation.Server.Host.Setup
 		}
 
 		/// <summary>
+		/// Prompts the user to create a <see cref="TelemetryConfiguration"/>.
+		/// </summary>
+		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
+		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in the new <see cref="TelemetryConfiguration"/>.</returns>
+		async ValueTask<TelemetryConfiguration> ConfigureTelemetry(CancellationToken cancellationToken)
+		{
+			bool enableReporting = await PromptYesNo("Enable version telemetry? This anonymously reports the TGS version in use.", true, cancellationToken);
+
+			string? serverFriendlyName = null;
+			if (enableReporting)
+			{
+				await console.WriteAsync("(Optional) Publically associate your reported version with a friendly name:", false, cancellationToken);
+				serverFriendlyName = await console.ReadLineAsync(false, cancellationToken);
+				if (String.IsNullOrWhiteSpace(serverFriendlyName))
+					serverFriendlyName = null;
+			}
+
+			return new TelemetryConfiguration
+			{
+				DisableVersionReporting = !enableReporting,
+				ServerFriendlyName = serverFriendlyName,
+			};
+		}
+
+		/// <summary>
 		/// Saves a given <see cref="Configuration"/> set to <paramref name="userConfigFileName"/>.
 		/// </summary>
 		/// <param name="userConfigFileName">The file to save the <see cref="Configuration"/> to.</param>
@@ -961,6 +994,7 @@ namespace Tgstation.Server.Host.Setup
 		/// <param name="elasticsearchConfiguration">The <see cref="ElasticsearchConfiguration"/> to save.</param>
 		/// <param name="controlPanelConfiguration">The <see cref="ControlPanelConfiguration"/> to save.</param>
 		/// <param name="swarmConfiguration">The <see cref="SwarmConfiguration"/> to save.</param>
+		/// <param name="telemetryConfiguration">The <see cref="TelemetryConfiguration"/> to save.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask"/> representing the running operation.</returns>
 		async ValueTask SaveConfiguration(
@@ -972,6 +1006,7 @@ namespace Tgstation.Server.Host.Setup
 			ElasticsearchConfiguration? elasticsearchConfiguration,
 			ControlPanelConfiguration controlPanelConfiguration,
 			SwarmConfiguration? swarmConfiguration,
+			TelemetryConfiguration? telemetryConfiguration,
 			CancellationToken cancellationToken)
 		{
 			newGeneralConfiguration.ApiPort = hostingPort ?? GeneralConfiguration.DefaultApiPort;
@@ -984,16 +1019,18 @@ namespace Tgstation.Server.Host.Setup
 				{ ElasticsearchConfiguration.Section, elasticsearchConfiguration },
 				{ ControlPanelConfiguration.Section, controlPanelConfiguration },
 				{ SwarmConfiguration.Section, swarmConfiguration },
+				{ TelemetryConfiguration.Section, telemetryConfiguration },
 			};
 
+			var versionConverter = new VersionConverter();
 			var builder = new SerializerBuilder()
-				.WithTypeConverter(new VersionConverter());
+				.WithTypeConverter(versionConverter);
 
 			if (userConfigFileName.EndsWith(".json", StringComparison.OrdinalIgnoreCase))
 				builder.JsonCompatible();
 
 			var serializer = new SerializerBuilder()
-				.WithTypeConverter(new VersionConverter())
+				.WithTypeConverter(versionConverter)
 				.Build();
 
 			var serializedYaml = serializer.Serialize(map);
@@ -1013,6 +1050,8 @@ namespace Tgstation.Server.Host.Setup
 					userConfigFileName,
 					configBytes,
 					cancellationToken);
+
+				postSetupServices.ReloadRequired = true;
 			}
 			catch (Exception e) when (e is not OperationCanceledException)
 			{
@@ -1054,6 +1093,8 @@ namespace Tgstation.Server.Host.Setup
 
 			var swarmConfiguration = await ConfigureSwarm(cancellationToken);
 
+			var telemetryConfiguration = await ConfigureTelemetry(cancellationToken);
+
 			await console.WriteAsync(null, true, cancellationToken);
 			await console.WriteAsync(String.Format(CultureInfo.InvariantCulture, "Configuration complete! Saving to {0}", userConfigFileName), true, cancellationToken);
 
@@ -1066,6 +1107,7 @@ namespace Tgstation.Server.Host.Setup
 				elasticSearchConfiguration,
 				controlPanelConfiguration,
 				swarmConfiguration,
+				telemetryConfiguration,
 				cancellationToken);
 		}
 
@@ -1182,6 +1224,7 @@ namespace Tgstation.Server.Host.Setup
 								Enable = true,
 								AllowAnyOrigin = true,
 							},
+							null,
 							null,
 							cancellationToken);
 					}

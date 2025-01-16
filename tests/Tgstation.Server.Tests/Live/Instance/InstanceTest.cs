@@ -1,8 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 
@@ -50,8 +48,8 @@ namespace Tgstation.Server.Tests.Live.Instance
 			await using var engineTest = new EngineTest(instanceClient.Engine, instanceClient.Jobs, fileDownloader, instanceClient.Metadata, testVersion.Engine.Value);
 			await using var chatTest = new ChatTest(instanceClient.ChatBots, instanceManagerClient, instanceClient.Jobs, instanceClient.Metadata);
 			var configTest = new ConfigurationTest(instanceClient.Configuration, instanceClient.Metadata);
-			await using var repoTest = new RepositoryTest(instanceClient.Repository, instanceClient.Jobs);
-			await using var dmTest = new DeploymentTest(instanceClient, instanceClient.Jobs, dmPort, ddPort, lowPrioDeployment, testVersion.Engine.Value);
+			await using var repoTest = new RepositoryTest(instanceClient, instanceClient.Repository, instanceClient.Jobs);
+			await using var dmTest = new DeploymentTest(instanceClient, instanceClient.Jobs, dmPort, ddPort, lowPrioDeployment, testVersion);
 
 			var byondTask = engineTest.Run(cancellationToken, out var firstInstall);
 			var chatTask = chatTest.RunPreWatchdog(cancellationToken);
@@ -77,6 +75,12 @@ namespace Tgstation.Server.Tests.Live.Instance
 				ddPort,
 				usingBasicWatchdog);
 			await wdt.Run(cancellationToken);
+
+			await wdt.ExpectGameDirectoryCount(
+				usingBasicWatchdog || new PlatformIdentifier().IsWindows
+					? 2 // old + new deployment
+					: 3, // + new mirrored deployment waiting to take over Live
+				cancellationToken);
 		}
 
 		public static async ValueTask<IEngineInstallationData> DownloadEngineVersion(
@@ -139,7 +143,7 @@ namespace Tgstation.Server.Tests.Live.Instance
 			using var windowsByondInstaller = byondInstaller as WindowsByondInstaller;
 
 			// get the bytes for stable
-			return await byondInstaller.DownloadVersion(compatVersion, null, cancellationToken);
+			return await byondInstaller.DownloadVersion(compatVersion, new JobProgressReporter(), cancellationToken);
 		}
 
 		public async Task RunCompatTests(
@@ -270,7 +274,8 @@ namespace Tgstation.Server.Tests.Live.Instance
 
 			var configSetupTask = new ConfigurationTest(instanceClient.Configuration, instanceClient.Metadata).SetupDMApiTests(true, cancellationToken);
 
-			if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TGS_TEST_GITHUB_TOKEN")))
+			if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TGS_TEST_GITHUB_TOKEN"))
+				&& !(Boolean.TryParse(Environment.GetEnvironmentVariable("TGS_TEST_OD_EXCLUSIVE"), out var odExclusive) && odExclusive))
 				await instanceClient.Repository.Update(new RepositoryUpdateRequest
 				{
 					CreateGitHubDeployments = true,
@@ -284,6 +289,12 @@ namespace Tgstation.Server.Tests.Live.Instance
 
 			await using var wdt = new WatchdogTest(compatVersion, instanceClient, instanceManager, serverPort, highPrioDD, ddPort, usingBasicWatchdog);
 			await wdt.Run(cancellationToken);
+
+			await instanceClient.DreamDaemon.Shutdown(cancellationToken);
+
+			await wdt.ExpectGameDirectoryCount(
+				1, // current deployment
+				cancellationToken);
 
 			await instanceManagerClient.Update(new InstanceUpdateRequest
 			{

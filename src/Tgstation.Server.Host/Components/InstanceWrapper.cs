@@ -55,9 +55,15 @@ namespace Tgstation.Server.Host.Components
 		public ValueTask InstanceRenamed(string newInstanceName, CancellationToken cancellationToken) => Instance.InstanceRenamed(newInstanceName, cancellationToken);
 
 		/// <inheritdoc />
-		public ValueTask SetAutoUpdateInterval(uint newInterval) => Instance.SetAutoUpdateInterval(newInterval);
+		public ValueTask ScheduleAutoUpdate(uint newInterval, string? newCron) => Instance.ScheduleAutoUpdate(newInterval, newCron);
 
 		/// <inheritdoc />
-		public CompileJob? LatestCompileJob() => Instance.LatestCompileJob();
+		public ValueTask<CompileJob?> LatestCompileJob() => Instance.LatestCompileJob();
+
+		/// <inheritdoc />
+		public ValueTask ScheduleServerStart(string? newCron) => Instance.ScheduleServerStart(newCron);
+
+		/// <inheritdoc />
+		public ValueTask ScheduleServerStop(string? newCron) => Instance.ScheduleServerStop(newCron);
 	}
 }

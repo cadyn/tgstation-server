@@ -12,7 +12,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Tgstation.Server.Host\Tgstation.Server.Host.csproj" />
+    <ProjectReference Include="..\..\src\Tgstation.Server.Shared\Tgstation.Server.Shared.csproj" />
   </ItemGroup>
 
 </Project>

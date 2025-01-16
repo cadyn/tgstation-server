@@ -17,17 +17,18 @@ namespace Tgstation.Server.Host.Components.Engine
 		/// <param name="version">The <see cref="EngineVersion"/> of the installation.</param>
 		/// <param name="path">The path to the installation.</param>
 		/// <param name="installationTask">The <see cref="Task"/> representing the installation process for the installation.</param>
-		/// <returns>The <see cref="IEngineInstallation"/>.</returns>
-		IEngineInstallation CreateInstallation(EngineVersion version, string path, Task installationTask);
+		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
+		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in the <see cref="IEngineInstallation"/>.</returns>
+		ValueTask<IEngineInstallation> CreateInstallation(EngineVersion version, string path, Task installationTask, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Download a given engine <paramref name="version"/>.
 		/// </summary>
 		/// <param name="version">The <see cref="EngineVersion"/> of the engine to download.</param>
-		/// <param name="jobProgressReporter">The optional <see cref="JobProgressReporter"/> for the operation.</param>
+		/// <param name="jobProgressReporter">The <see cref="JobProgressReporter"/> for the operation.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in the <see cref="IEngineInstallationData"/> for the download.</returns>
-		ValueTask<IEngineInstallationData> DownloadVersion(EngineVersion version, JobProgressReporter? jobProgressReporter, CancellationToken cancellationToken);
+		ValueTask<IEngineInstallationData> DownloadVersion(EngineVersion version, JobProgressReporter jobProgressReporter, CancellationToken cancellationToken);
 
 		/// <summary>
 		/// Does actions necessary to get an extracted installation working.

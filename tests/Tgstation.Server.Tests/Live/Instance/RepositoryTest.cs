@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Tgstation.Server.Api.Models;
 using Tgstation.Server.Api.Models.Request;
 using Tgstation.Server.Api.Models.Response;
+using Tgstation.Server.Api.Rights;
 using Tgstation.Server.Client;
 using Tgstation.Server.Client.Components;
 
@@ -15,11 +16,13 @@ namespace Tgstation.Server.Tests.Live.Instance
 {
 	sealed class RepositoryTest : JobsRequiredTest
 	{
+		readonly IInstanceClient instanceClient;
 		readonly IRepositoryClient repositoryClient;
 
-		public RepositoryTest(IRepositoryClient repositoryClient, IJobsClient jobsClient)
+		public RepositoryTest(IInstanceClient instanceClient, IRepositoryClient repositoryClient, IJobsClient jobsClient)
 			: base(jobsClient)
 		{
+			this.instanceClient = instanceClient ?? throw new ArgumentNullException(nameof(instanceClient));
 			this.repositoryClient = repositoryClient ?? throw new ArgumentNullException(nameof(repositoryClient));
 		}
 
@@ -125,10 +128,11 @@ namespace Tgstation.Server.Tests.Live.Instance
 			// Back
 			updated = await Checkout(new RepositoryUpdateRequest { Reference = "master" }, false, true, cancellationToken);
 
+			await RecloneTest(cancellationToken);
+
 			// enable the good shit if possible
-			if (TestingUtils.RunningInGitHubActions
-				|| String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TGS_TEST_GITHUB_TOKEN"))
-				|| Environment.MachineName.Equals("CYBERSTATIONXVI", StringComparison.OrdinalIgnoreCase))
+			if (!String.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("TGS_TEST_GITHUB_TOKEN"))
+				&& !(Boolean.TryParse(Environment.GetEnvironmentVariable("TGS_TEST_OD_EXCLUSIVE"), out var odExclusive) && odExclusive))
 				await repositoryClient.Update(new RepositoryUpdateRequest
 				{
 					CreateGitHubDeployments = true,
@@ -140,6 +144,46 @@ namespace Tgstation.Server.Tests.Live.Instance
 
 			var prNumber = 2;
 			await TestMergeTests(updated, prNumber, cancellationToken);
+
+			await RegressionTest2064(cancellationToken);
+		}
+
+		async ValueTask RegressionTest2064(CancellationToken cancellationToken)
+		{
+			var oldPerms = await instanceClient.PermissionSets.Read(cancellationToken);
+
+			var newPerms = await instanceClient.PermissionSets.Update(new InstancePermissionSetRequest
+			{
+				PermissionSetId = oldPerms.PermissionSetId,
+				RepositoryRights = RepositoryRights.SetSha,
+			}, cancellationToken);
+
+			Assert.AreEqual(RepositoryRights.SetSha, newPerms.RepositoryRights);
+
+			await ApiAssert.ThrowsException<InsufficientPermissionsException>(async () => await repositoryClient.Read(cancellationToken));
+
+			await instanceClient.PermissionSets.Update(new InstancePermissionSetRequest
+			{
+				PermissionSetId = oldPerms.PermissionSetId,
+				RepositoryRights = oldPerms.RepositoryRights,
+			}, cancellationToken);
+		}
+
+		async ValueTask RecloneTest(CancellationToken cancellationToken)
+		{
+			var initialState = await repositoryClient.Read(cancellationToken);
+			Assert.IsNotNull(initialState.Reference);
+			Assert.IsNotNull(initialState.RevisionInformation);
+			Assert.IsNotNull(initialState.RevisionInformation.CommitSha);
+			Assert.IsNotNull(initialState.RevisionInformation.OriginCommitSha);
+
+			var reclone = await repositoryClient.Reclone(cancellationToken);
+			await WaitForJob(reclone.ActiveJob, 70, false, null, cancellationToken);
+
+			var newState = await repositoryClient.Read(cancellationToken);
+			Assert.AreEqual(initialState.Reference, newState.Reference);
+			Assert.AreEqual(initialState.RevisionInformation.CommitSha, newState.RevisionInformation.CommitSha);
+			Assert.AreEqual(initialState.RevisionInformation.OriginCommitSha, newState.RevisionInformation.OriginCommitSha);
 		}
 
 		async ValueTask<RepositoryResponse> Checkout(RepositoryUpdateRequest updated, bool expectFailure, bool isRef, CancellationToken cancellationToken)

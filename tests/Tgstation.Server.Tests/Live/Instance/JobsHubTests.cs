@@ -20,8 +20,8 @@ namespace Tgstation.Server.Tests.Live.Instance
 {
 	sealed class JobsHubTests : IJobsHub
 	{
-		readonly IServerClient permedUser;
-		readonly IServerClient permlessUser;
+		readonly IRestServerClient permedUser;
+		readonly IRestServerClient permlessUser;
 
 		readonly TaskCompletionSource finishTcs;
 
@@ -34,10 +34,10 @@ namespace Tgstation.Server.Tests.Live.Instance
 
 		long? permlessPsId;
 
-		public JobsHubTests(IServerClient permedUser, IServerClient permlessUser)
+		public JobsHubTests(MultiServerClient permedUser, MultiServerClient permlessUser)
 		{
-			this.permedUser = permedUser;
-			this.permlessUser = permlessUser;
+			this.permedUser = permedUser.RestClient;
+			this.permlessUser = permlessUser.RestClient;
 
 			Assert.AreNotSame(permedUser, permlessUser);
 
@@ -262,7 +262,7 @@ namespace Tgstation.Server.Tests.Live.Instance
 			Assert.AreEqual(HubConnectionState.Disconnected, permlessConn.State);
 
 			// force token refreshs
-			await Task.WhenAll(permedUser.Administration.Read(cancellationToken).AsTask(), permlessUser.Instances.List(null, cancellationToken).AsTask());
+			await Task.WhenAll(permedUser.Administration.Read(false, cancellationToken).AsTask(), permlessUser.Instances.List(null, cancellationToken).AsTask());
 
 			if (!permlessPsId.HasValue)
 			{

@@ -131,6 +131,11 @@ namespace Tgstation.Server.Host.Components
 		readonly SwarmConfiguration swarmConfiguration;
 
 		/// <summary>
+		/// The <see cref="InternalConfiguration"/> for the <see cref="InstanceManager"/>.
+		/// </summary>
+		readonly InternalConfiguration internalConfiguration;
+
+		/// <summary>
 		/// The <see cref="TaskCompletionSource"/> for <see cref="Ready"/>.
 		/// </summary>
 		readonly TaskCompletionSource readyTcs;
@@ -177,6 +182,7 @@ namespace Tgstation.Server.Host.Components
 		/// <param name="platformIdentifier">The value of <see cref="platformIdentifier"/>.</param>
 		/// <param name="generalConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the value of <see cref="generalConfiguration"/>.</param>
 		/// <param name="swarmConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the value of <see cref="swarmConfiguration"/>.</param>
+		/// <param name="internalConfigurationOptions">The <see cref="IOptions{TOptions}"/> containing the value of <see cref="internalConfiguration"/>.</param>
 		/// <param name="logger">The value of <see cref="logger"/>.</param>
 		public InstanceManager(
 			IInstanceFactory instanceFactory,
@@ -193,6 +199,7 @@ namespace Tgstation.Server.Host.Components
 			IPlatformIdentifier platformIdentifier,
 			IOptions<GeneralConfiguration> generalConfigurationOptions,
 			IOptions<SwarmConfiguration> swarmConfigurationOptions,
+			IOptions<InternalConfiguration> internalConfigurationOptions,
 			ILogger<InstanceManager> logger)
 		{
 			this.instanceFactory = instanceFactory ?? throw new ArgumentNullException(nameof(instanceFactory));
@@ -209,6 +216,7 @@ namespace Tgstation.Server.Host.Components
 			this.platformIdentifier = platformIdentifier ?? throw new ArgumentNullException(nameof(platformIdentifier));
 			generalConfiguration = generalConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(generalConfigurationOptions));
 			swarmConfiguration = swarmConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(swarmConfigurationOptions));
+			internalConfiguration = internalConfigurationOptions?.Value ?? throw new ArgumentNullException(nameof(internalConfigurationOptions));
 			this.logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
 			originalConsoleTitle = console.Title;
@@ -533,7 +541,7 @@ namespace Tgstation.Server.Host.Components
 							loggedDelay = true;
 						}
 
-						delayTask = asyncDelayer.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+						delayTask = asyncDelayer.Delay(TimeSpan.FromMilliseconds(100), cancellationToken).AsTask();
 					}
 
 				await delayTask;
@@ -595,7 +603,7 @@ namespace Tgstation.Server.Host.Components
 				logger.LogInformation("{versionString}", assemblyInformationProvider.VersionString);
 				console.SetTitle(assemblyInformationProvider.VersionString);
 
-				CheckSystemCompatibility();
+				PreflightChecks();
 
 				// To let the web server startup immediately before we do any intense work
 				await Task.Yield();
@@ -665,7 +673,7 @@ namespace Tgstation.Server.Host.Components
 		/// <summary>
 		/// Check we have a valid system and configuration.
 		/// </summary>
-		void CheckSystemCompatibility()
+		void PreflightChecks()
 		{
 			logger.LogDebug("Running as user: {username}", Environment.UserName);
 
@@ -675,6 +683,11 @@ namespace Tgstation.Server.Host.Components
 			{
 				if (!systemIdentity.CanCreateSymlinks)
 					throw new InvalidOperationException($"The user running {Constants.CanonicalPackageName} cannot create symlinks! Please try running as an administrative user!");
+
+				if (!platformIdentifier.IsWindows && systemIdentity.IsSuperUser && !internalConfiguration.UsingDocker)
+				{
+					logger.LogWarning("TGS is being run as the root account. This is not recommended.");
+				}
 			}
 
 			// This runs before the real socket is opened, ensures we don't perform reattaches unless we're fairly certain the bind won't fail

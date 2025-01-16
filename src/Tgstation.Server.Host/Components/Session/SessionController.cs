@@ -7,6 +7,7 @@ using System.Threading;
 using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 using Newtonsoft.Json;
 
@@ -119,6 +120,12 @@ namespace Tgstation.Server.Host.Components.Session
 		/// The <see cref="FifoSemaphore"/> used to prevent concurrent calls into /world/Topic().
 		/// </summary>
 		public FifoSemaphore TopicSendSemaphore { get; }
+
+		/// <inheritdoc />
+		public long? MemoryUsage => process.MemoryUsage;
+
+		/// <inheritdoc />
+		public DateTimeOffset? LaunchTime => process.LaunchTime;
 
 		/// <summary>
 		/// The <see cref="Byond.TopicSender.ITopicClient"/> for the <see cref="SessionController"/>.
@@ -540,7 +547,8 @@ namespace Tgstation.Server.Host.Components.Session
 					toAwait,
 					asyncDelayer.Delay(
 						TimeSpan.FromSeconds(startupTimeout.Value),
-						CancellationToken.None)); // DCT: None available, task will clean up after delay
+						CancellationToken.None)
+					.AsTask()); // DCT: None available, task will clean up after delay
 
 			Logger.LogTrace(
 				"Waiting for LaunchResult based on {launchResultCompletionCause}{possibleTimeout}...",
@@ -604,7 +612,7 @@ namespace Tgstation.Server.Host.Components.Session
 
 			const int GracePeriodSeconds = 30;
 			Logger.LogDebug("Server will terminated in {gracePeriodSeconds}s if it does not exit...", GracePeriodSeconds);
-			var delayTask = asyncDelayer.Delay(TimeSpan.FromSeconds(GracePeriodSeconds), CancellationToken.None); // DCT: None available
+			var delayTask = asyncDelayer.Delay(TimeSpan.FromSeconds(GracePeriodSeconds), CancellationToken.None).AsTask(); // DCT: None available
 			await Task.WhenAny(process.Lifetime, delayTask);
 
 			if (!process.Lifetime.IsCompleted)
@@ -942,7 +950,9 @@ namespace Tgstation.Server.Host.Components.Session
 			using (await TopicSendSemaphore.Lock(cancellationToken))
 				byondResponse = await byondTopicSender.SendWithOptionalPriority(
 					asyncDelayer,
-					Logger,
+					LogTopicRequests
+						? Logger
+						: NullLogger.Instance,
 					queryString,
 					targetPort,
 					priority,

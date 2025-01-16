@@ -7,7 +7,7 @@ using Tgstation.Server.Api.Models.Response;
 namespace Tgstation.Server.Host.Models
 {
 	/// <inheritdoc cref="Api.Models.Internal.CompileJob" />
-	public sealed class CompileJob : Api.Models.Internal.CompileJob, IApiTransformable<CompileJobResponse>
+	public sealed class CompileJob : Api.Models.Internal.CompileJob, ILegacyApiTransformable<CompileJobResponse>
 	{
 		/// <summary>
 		/// See <see cref="CompileJobResponse.Job"/>.
@@ -60,7 +60,7 @@ namespace Tgstation.Server.Host.Models
 		/// <summary>
 		/// The GitHub deployment ID associated with the <see cref="CompileJob"/> if any.
 		/// </summary>
-		public int? GitHubDeploymentId { get; set; }
+		public long? GitHubDeploymentId { get; set; }
 
 		/// <inheritdoc />
 		public override Version? DMApiVersion

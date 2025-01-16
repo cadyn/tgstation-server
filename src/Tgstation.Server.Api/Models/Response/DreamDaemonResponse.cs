@@ -49,9 +49,21 @@ namespace Tgstation.Server.Api.Models.Response
 		public ushort? CurrentPort { get; set; }
 
 		/// <summary>
+		/// The <see cref="EngineType.OpenDream"/> topic port the running <see cref="DreamDaemonResponse"/> instance is set to.
+		/// </summary>
+		[ResponseOptions]
+		public ushort? CurrentTopicPort { get; set; }
+
+		/// <summary>
 		/// The webclient status the running <see cref="DreamDaemonResponse"/> instance is set to.
 		/// </summary>
 		[ResponseOptions]
 		public bool? CurrentAllowWebclient { get; set; }
+
+		/// <summary>
+		/// The amount of RAM in use by the game server in bytes.
+		/// </summary>
+		[ResponseOptions]
+		public long? ImmediateMemoryUsage { get; set; }
 	}
 }

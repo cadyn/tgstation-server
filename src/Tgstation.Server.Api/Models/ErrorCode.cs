@@ -1,5 +1,4 @@
-﻿using System;
-using System.ComponentModel;
+﻿using System.ComponentModel;
 
 using Tgstation.Server.Common;
 
@@ -8,7 +7,7 @@ namespace Tgstation.Server.Api.Models
 	/// <summary>
 	/// Types of <see cref="Response.ErrorMessageResponse"/>s that the API may return.
 	/// </summary>
-	/// <remarks>Entries marked with the <see cref="ObsoleteAttribute"/> are no longer in use but kept for placeholders until they can be recycled in the next major API version.</remarks>
+	/// <remarks>Entries marked Obsolete are no longer in use but kept for placeholders until they can be recycled in the next major API version.</remarks>
 	public enum ErrorCode : uint
 	{
 		/// <summary>
@@ -186,7 +185,7 @@ namespace Tgstation.Server.Api.Models
 		SwarmIntegrityCheckFailed,
 
 		/// <summary>
-		/// One of <see cref="Internal.RepositorySettings.AccessUser"/> and <see cref="Internal.RepositorySettings.AccessToken"/> is set while the other isn't.
+		/// One of <see cref="RepositorySettings.AccessUser"/> and <see cref="RepositorySettings.AccessToken"/> is set while the other isn't.
 		/// </summary>
 		[Description("Either both accessUser and accessToken must be set or neither!")]
 		RepoMismatchUserAndAccessToken,
@@ -240,13 +239,13 @@ namespace Tgstation.Server.Api.Models
 		RepoDuplicateTestMerge,
 
 		/// <summary>
-		/// Attempted to set a whitespace <see cref="Internal.RepositorySettings.CommitterName"/>.
+		/// Attempted to set a whitespace <see cref="RepositorySettings.CommitterName"/>.
 		/// </summary>
 		[Description("committerName cannot be whitespace!")]
 		RepoWhitespaceCommitterName,
 
 		/// <summary>
-		/// Attempted to set a whitespace <see cref="Internal.RepositorySettings.CommitterEmail"/>.
+		/// Attempted to set a whitespace <see cref="RepositorySettings.CommitterEmail"/>.
 		/// </summary>
 		[Description("committerEmail cannot be whitespace!")]
 		RepoWhitespaceCommitterEmail,
@@ -378,19 +377,19 @@ namespace Tgstation.Server.Api.Models
 		InstanceMissingDreamMakerSettings,
 
 		/// <summary>
-		/// Missing <see cref="Internal.RepositorySettings"/> in database.
+		/// Missing <see cref="RepositorySettings"/> in database.
 		/// </summary>
 		[Description("Could not retrieve Repository settings from the database!")]
 		InstanceMissingRepositorySettings,
 
 		/// <summary>
-		/// Performing an automatic update with the <see cref="Internal.RepositorySettings.AutoUpdatesKeepTestMerges"/> flag resulted in merge conflicts.
+		/// Performing an automatic update with the <see cref="RepositorySettings.AutoUpdatesKeepTestMerges"/> flag resulted in merge conflicts.
 		/// </summary>
 		[Description("Performing this automatic update as a merge would result in conficts. Aborting!")]
 		InstanceUpdateTestMergeConflict,
 
 		/// <summary>
-		/// <see cref="Internal.RepositorySettings.AccessUser"/> and <see cref="Internal.RepositorySettings.AccessToken"/> are required for this operation.
+		/// <see cref="RepositorySettings.AccessUser"/> and <see cref="RepositorySettings.AccessToken"/> are required for this operation.
 		/// </summary>
 		[Description("Git credentials are required for this operation!")]
 		RepoCredentialsRequired,
@@ -652,5 +651,23 @@ namespace Tgstation.Server.Api.Models
 		/// </summary>
 		[Description("Could not create dump as dotnet diagnostics threw an exception!")]
 		DotnetDiagnosticsFailure,
+
+		/// <summary>
+		/// The configured .dme could not be found.
+		/// </summary>
+		[Description("Could not load configured .dme due to it being outside the deployment directory! This should be a relative path.")]
+		DeploymentWrongDme,
+
+		/// <summary>
+		/// Entered wrong <see cref="RepositorySettings.AccessUser"/> for a <see cref="RepositorySettings.AccessToken"/>.
+		/// </summary>
+		[Description("Provided repository username doesn't match the user of the corresponding access token!")]
+		RepoTokenUsernameMismatch,
+
+		/// <summary>
+		/// Attempted to make a cross swarm server request using the GraphQL API.
+		/// </summary>
+		[Description("GraphQL swarm remote gateways not implemented!")]
+		RemoteGatewaysNotImplemented,
 	}
 }

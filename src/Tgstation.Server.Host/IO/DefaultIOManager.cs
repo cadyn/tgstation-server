@@ -221,14 +221,7 @@ namespace Tgstation.Server.Host.IO
 		/// <inheritdoc />
 		public async ValueTask<byte[]> ReadAllBytes(string path, CancellationToken cancellationToken)
 		{
-			path = ResolvePath(path);
-			await using var file = new FileStream(
-				path,
-				FileMode.Open,
-				FileAccess.Read,
-				FileShare.ReadWrite | FileShare.Delete,
-				DefaultBufferSize,
-				FileOptions.Asynchronous | FileOptions.SequentialScan);
+			await using var file = CreateAsyncSequentialReadStream(path);
 			byte[] buf;
 			buf = new byte[file.Length];
 			await file.ReadAsync(buf, cancellationToken);
@@ -257,6 +250,19 @@ namespace Tgstation.Server.Host.IO
 				FileMode.Create,
 				FileAccess.Write,
 				FileShare.Read | FileShare.Delete,
+				DefaultBufferSize,
+				FileOptions.Asynchronous | FileOptions.SequentialScan);
+		}
+
+		/// <inheritdoc />
+		public FileStream CreateAsyncSequentialReadStream(string path)
+		{
+			path = ResolvePath(path);
+			return new FileStream(
+				path,
+				FileMode.Open,
+				FileAccess.Read,
+				FileShare.ReadWrite | FileShare.Delete,
 				DefaultBufferSize,
 				FileOptions.Asynchronous | FileOptions.SequentialScan);
 		}
@@ -351,6 +357,33 @@ namespace Tgstation.Server.Host.IO
 			FileShare.Read | FileShare.Delete | (shareWrite ? FileShare.Write : FileShare.None),
 			DefaultBufferSize,
 			true);
+
+		/// <inheritdoc />
+		public Task<bool> PathIsChildOf(string parentPath, string childPath, CancellationToken cancellationToken) => Task.Factory.StartNew(
+			() =>
+			{
+				parentPath = ResolvePath(parentPath);
+				childPath = ResolvePath(childPath);
+
+				if (parentPath == childPath)
+					return true;
+
+				// https://stackoverflow.com/questions/5617320/given-full-path-check-if-path-is-subdirectory-of-some-other-path-or-otherwise?lq=1
+				var di1 = new DirectoryInfo(parentPath);
+				var di2 = new DirectoryInfo(childPath);
+				while (di2.Parent != null)
+				{
+					if (di2.Parent.FullName == di1.FullName)
+						return true;
+
+					di2 = di2.Parent;
+				}
+
+				return false;
+			},
+			cancellationToken,
+			BlockingTaskCreationOptions,
+			TaskScheduler.Current);
 
 		/// <summary>
 		/// Copies a directory from <paramref name="src"/> to <paramref name="dest"/>.

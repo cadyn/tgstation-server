@@ -4,7 +4,7 @@ using System;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
-namespace Tgstation.Server.Host.Database.Migrations
+namespace Tgstation.Server.Host.Database
 {
 	[DbContext(typeof(SqlServerDatabaseContext))]
 	partial class SqlServerDatabaseContextModelSnapshot : ModelSnapshot
@@ -13,7 +13,7 @@ namespace Tgstation.Server.Host.Database.Migrations
 		{
 #pragma warning disable 612, 618
 			modelBuilder
-				.HasAnnotation("ProductVersion", "8.0.1")
+				.HasAnnotation("ProductVersion", "8.0.10")
 				.HasAnnotation("Relational:MaxIdentifierLength", 128);
 
 			SqlServerModelBuilderExtensions.UseIdentityColumns(modelBuilder);
@@ -139,8 +139,8 @@ namespace Tgstation.Server.Host.Database.Migrations
 					.IsRequired()
 					.HasColumnType("nvarchar(max)");
 
-				b.Property<int?>("GitHubDeploymentId")
-					.HasColumnType("int");
+				b.Property<long?>("GitHubDeploymentId")
+					.HasColumnType("bigint");
 
 				b.Property<long?>("GitHubRepoId")
 					.HasColumnType("bigint");
@@ -215,6 +215,9 @@ namespace Tgstation.Server.Host.Database.Migrations
 					.IsRequired()
 					.HasColumnType("bit");
 
+				b.Property<int>("OpenDreamTopicPort")
+					.HasColumnType("int");
+
 				b.Property<int>("Port")
 					.HasColumnType("int");
 
@@ -256,16 +259,19 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.Property<int>("ApiValidationSecurityLevel")
 					.HasColumnType("int");
 
+				b.Property<string>("CompilerAdditionalArguments")
+					.HasMaxLength(10000)
+					.HasColumnType("nvarchar(max)");
+
+				b.Property<int>("DMApiValidationMode")
+					.HasColumnType("int");
+
 				b.Property<long>("InstanceId")
 					.HasColumnType("bigint");
 
 				b.Property<string>("ProjectName")
 					.HasMaxLength(10000)
 					.HasColumnType("nvarchar(max)");
-
-				b.Property<bool?>("RequireDMApiValidation")
-					.IsRequired()
-					.HasColumnType("bit");
 
 				b.Property<TimeSpan?>("Timeout")
 					.IsRequired()
@@ -286,6 +292,21 @@ namespace Tgstation.Server.Host.Database.Migrations
 					.HasColumnType("bigint");
 
 				SqlServerPropertyBuilderExtensions.UseIdentityColumn(b.Property<long?>("Id"));
+
+				b.Property<string>("AutoStartCron")
+					.IsRequired()
+					.HasMaxLength(1000)
+					.HasColumnType("nvarchar(1000)");
+
+				b.Property<string>("AutoStopCron")
+					.IsRequired()
+					.HasMaxLength(1000)
+					.HasColumnType("nvarchar(1000)");
+
+				b.Property<string>("AutoUpdateCron")
+					.IsRequired()
+					.HasMaxLength(1000)
+					.HasColumnType("nvarchar(1000)");
 
 				b.Property<long>("AutoUpdateInterval")
 					.HasColumnType("bigint");
@@ -440,7 +461,7 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.Property<int>("Provider")
 					.HasColumnType("int");
 
-				b.Property<long?>("UserId")
+				b.Property<long>("UserId")
 					.HasColumnType("bigint");
 
 				b.HasKey("Id");
@@ -898,7 +919,8 @@ namespace Tgstation.Server.Host.Database.Migrations
 				b.HasOne("Tgstation.Server.Host.Models.User", "User")
 					.WithMany("OAuthConnections")
 					.HasForeignKey("UserId")
-					.OnDelete(DeleteBehavior.Cascade);
+					.OnDelete(DeleteBehavior.Cascade)
+					.IsRequired();
 
 				b.Navigation("User");
 			});

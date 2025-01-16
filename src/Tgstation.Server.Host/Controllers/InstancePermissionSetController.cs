@@ -20,8 +20,6 @@ using Tgstation.Server.Host.Models;
 using Tgstation.Server.Host.Security;
 using Tgstation.Server.Host.Utils;
 
-using Z.EntityFramework.Plus;
-
 namespace Tgstation.Server.Host.Controllers
 {
 	/// <summary>
@@ -125,7 +123,7 @@ namespace Tgstation.Server.Host.Controllers
 			// needs to be set for next call
 			dbUser.PermissionSet = existingPermissionSet;
 			await permissionsUpdateNotifyee.InstancePermissionSetCreated(dbUser, cancellationToken);
-			return Created(dbUser.ToApi());
+			return this.Created(dbUser.ToApi());
 		}
 #pragma warning restore CA1506
 
@@ -259,7 +257,7 @@ namespace Tgstation.Server.Host.Controllers
 				.Where(x => x.Id == Instance.Id)
 				.SelectMany(x => x.InstancePermissionSets)
 				.Where(x => x.PermissionSetId == id)
-				.DeleteAsync(cancellationToken);
+				.ExecuteDeleteAsync(cancellationToken);
 
 			return numDeleted > 0 ? NoContent() : this.Gone();
 		}

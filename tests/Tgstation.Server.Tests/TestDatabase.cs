@@ -13,6 +13,7 @@ using Tgstation.Server.Host.Database.Migrations;
 using Tgstation.Server.Host.Database;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using Tgstation.Server.Api.Models.Internal;
 
 namespace Tgstation.Server.Tests
 {
@@ -104,9 +105,12 @@ namespace Tgstation.Server.Tests
 			var instance = new Host.Models.Instance
 			{
 				AutoUpdateInterval = 0,
+				AutoUpdateCron = String.Empty,
 				ChatBotLimit = 1,
 				ChatSettings = new List<Host.Models.ChatBot>(),
 				ConfigurationType = ConfigurationType.HostWrite,
+				AutoStartCron = String.Empty,
+				AutoStopCron = String.Empty,
 				DreamDaemonSettings = new Host.Models.DreamDaemonSettings
 				{
 					AllowWebClient = false,
@@ -114,6 +118,7 @@ namespace Tgstation.Server.Tests
 					HealthCheckSeconds = 0,
 					DumpOnHealthCheckRestart = false,
 					Port = 1447,
+					OpenDreamTopicPort = 0,
 					SecurityLevel = DreamDaemonSecurity.Safe,
 					Visibility = DreamDaemonVisibility.Public,
 					StartupTimeout = 1000,
@@ -128,7 +133,7 @@ namespace Tgstation.Server.Tests
 				{
 					ApiValidationPort = 1557,
 					ApiValidationSecurityLevel = DreamDaemonSecurity.Trusted,
-					RequireDMApiValidation = false,
+					DMApiValidationMode = DMApiValidationMode.Skipped,
 					Timeout = TimeSpan.FromSeconds(13),
 				},
 				InstancePermissionSets = new List<Host.Models.InstancePermissionSet>

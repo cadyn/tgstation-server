@@ -76,16 +76,26 @@ namespace Tgstation.Server.Host.Components.Deployment.Remote
 
 			var instanceAuthenticated = repositorySettings!.AccessToken != null;
 			IAuthenticatedGitHubService? authenticatedGitHubService;
-			IGitHubService gitHubService;
+			IGitHubService? gitHubService;
 			if (instanceAuthenticated)
 			{
-				authenticatedGitHubService = gitHubServiceFactory.CreateService(repositorySettings.AccessToken!);
-				gitHubService = authenticatedGitHubService;
+				authenticatedGitHubService = await gitHubServiceFactory.CreateService(
+					repositorySettings.AccessToken!,
+					new RepositoryIdentifier(remoteInformation),
+					cancellationToken);
+
+				if (authenticatedGitHubService == null)
+				{
+					Logger.LogWarning("Can't create GitHub deployment as authentication for repository failed!");
+					gitHubService = await gitHubServiceFactory.CreateService(cancellationToken);
+				}
+				else
+					gitHubService = authenticatedGitHubService;
 			}
 			else
 			{
 				authenticatedGitHubService = null;
-				gitHubService = gitHubServiceFactory.CreateService();
+				gitHubService = await gitHubServiceFactory.CreateService(cancellationToken);
 			}
 
 			var repoOwner = remoteInformation.RemoteRepositoryOwner!;
@@ -99,12 +109,12 @@ namespace Tgstation.Server.Host.Components.Deployment.Remote
 				Logger.LogTrace("Not creating deployment");
 			else if (!instanceAuthenticated)
 				Logger.LogWarning("Can't create GitHub deployment as no access token is set for repository!");
-			else
+			else if (authenticatedGitHubService != null)
 			{
 				Logger.LogTrace("Creating deployment...");
 				try
 				{
-					compileJob.GitHubDeploymentId = await authenticatedGitHubService!.CreateDeployment(
+					compileJob.GitHubDeploymentId = await authenticatedGitHubService.CreateDeployment(
 						new NewDeployment(compileJob.RevisionInformation.CommitSha)
 						{
 							AutoMerge = false,
@@ -175,8 +185,12 @@ namespace Tgstation.Server.Host.Components.Deployment.Remote
 			}
 
 			var gitHubService = repositorySettings.AccessToken != null
-				? gitHubServiceFactory.CreateService(repositorySettings.AccessToken)
-				: gitHubServiceFactory.CreateService();
+				? await gitHubServiceFactory.CreateService(
+					repositorySettings.AccessToken,
+					new RepositoryIdentifier(repository),
+					cancellationToken)
+					?? await gitHubServiceFactory.CreateService(cancellationToken)
+				: await gitHubServiceFactory.CreateService(cancellationToken);
 
 			var tasks = revisionInformation
 				.ActiveTestMerges
@@ -255,7 +269,16 @@ namespace Tgstation.Server.Host.Components.Deployment.Remote
 			int testMergeNumber,
 			CancellationToken cancellationToken)
 		{
-			var gitHubService = gitHubServiceFactory.CreateService(repositorySettings.AccessToken!);
+			var gitHubService = await gitHubServiceFactory.CreateService(
+				repositorySettings.AccessToken!,
+				new RepositoryIdentifier(remoteRepositoryOwner, remoteRepositoryName),
+				cancellationToken);
+
+			if (gitHubService == null)
+			{
+				Logger.LogWarning("Error posting GitHub comment: Authentication failed!");
+				return;
+			}
 
 			try
 			{
@@ -343,7 +366,18 @@ namespace Tgstation.Server.Host.Components.Deployment.Remote
 				return;
 			}
 
-			var gitHubService = gitHubServiceFactory.CreateService(gitHubAccessToken);
+			var gitHubService = await gitHubServiceFactory.CreateService(
+				gitHubAccessToken,
+				new RepositoryIdentifier(compileJob.GitHubRepoId.Value),
+				cancellationToken);
+
+			if (gitHubService == null)
+			{
+				Logger.LogWarning(
+					"GitHub authentication failed, can't update to {deploymentState}!",
+					deploymentState);
+				return;
+			}
 
 			try
 			{

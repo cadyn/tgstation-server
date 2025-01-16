@@ -1,4 +1,6 @@
 ﻿using System;
+using System.Threading;
+using System.Threading.Tasks;
 
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -44,13 +46,29 @@ namespace Tgstation.Server.Host.Utils.GitHub
 		}
 
 		/// <inheritdoc />
-		public IGitHubService CreateService() => CreateServiceImpl(gitHubClientFactory.CreateClient());
+		public async ValueTask<IGitHubService> CreateService(CancellationToken cancellationToken)
+			=> CreateServiceImpl(
+				await gitHubClientFactory.CreateClient(cancellationToken));
 
 		/// <inheritdoc />
-		public IAuthenticatedGitHubService CreateService(string accessToken)
+		public async ValueTask<IAuthenticatedGitHubService> CreateService(string accessToken, CancellationToken cancellationToken)
 			=> CreateServiceImpl(
-				gitHubClientFactory.CreateClient(
-					accessToken ?? throw new ArgumentNullException(nameof(accessToken))));
+				await gitHubClientFactory.CreateClient(
+					accessToken ?? throw new ArgumentNullException(nameof(accessToken)),
+					cancellationToken));
+
+		/// <inheritdoc />
+		public async ValueTask<IAuthenticatedGitHubService?> CreateService(string accessString, RepositoryIdentifier repositoryIdentifier, CancellationToken cancellationToken)
+		{
+			var client = await gitHubClientFactory.CreateClientForRepository(
+				accessString ?? throw new ArgumentNullException(nameof(accessString)),
+				repositoryIdentifier,
+				cancellationToken);
+			if (client == null)
+				return null;
+
+			return CreateServiceImpl(client);
+		}
 
 		/// <summary>
 		/// Create a <see cref="GitHubService"/>.

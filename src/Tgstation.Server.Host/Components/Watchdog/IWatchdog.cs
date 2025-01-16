@@ -20,9 +20,24 @@ namespace Tgstation.Server.Host.Components.Watchdog
 		long? SessionId { get; }
 
 		/// <summary>
+		/// When the current server executions was started.
+		/// </summary>
+		DateTimeOffset? LaunchTime { get; }
+
+		/// <summary>
+		/// Last known client count queried from the DMAPI. Requires health checks to be enabled to populate.
+		/// </summary>
+		uint? ClientCount { get; }
+
+		/// <summary>
 		/// The current <see cref="WatchdogStatus"/>.
 		/// </summary>
 		WatchdogStatus Status { get; }
+
+		/// <summary>
+		/// Gets the memory usage of the game server in bytes.
+		/// </summary>
+		long? MemoryUsage { get; }
 
 		/// <summary>
 		/// If the alpha server is the active server.

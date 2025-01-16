@@ -1,18 +1,26 @@
+<p align="center">
+  <img src =./build/logo.svg>
+</p>
+
 # tgstation-server
 
-![CI Pipeline](https://github.com/tgstation/tgstation-server/workflows/CI%20Pipeline/badge.svg) [![codecov](https://codecov.io/gh/tgstation/tgstation-server/branch/master/graph/badge.svg)](https://codecov.io/gh/tgstation/tgstation-server)
+[![CI Pipeline](https://github.com/tgstation/tgstation-server/actions/workflows/ci-pipeline.yml/badge.svg)](https://github.com/tgstation/tgstation-server/actions/workflows/ci-pipeline.yml) [![codecov](https://codecov.io/gh/tgstation/tgstation-server/branch/master/graph/badge.svg)](https://codecov.io/gh/tgstation/tgstation-server)
 
 [![GitHub license](https://img.shields.io/github/license/tgstation/tgstation-server.svg)](LICENSE) [![Average time to resolve an issue](http://isitmaintained.com/badge/resolution/tgstation/tgstation-server.svg)](http://isitmaintained.com/project/tgstation/tgstation-server "Average time to resolve an issue") [![NuGet version](https://img.shields.io/nuget/v/Tgstation.Server.Api.svg)](https://www.nuget.org/packages/Tgstation.Server.Api) [![NuGet version](https://img.shields.io/nuget/v/Tgstation.Server.Client.svg)](https://www.nuget.org/packages/Tgstation.Server.Client)
 
 [![forthebadge](http://forthebadge.com/images/badges/made-with-c-sharp.svg)](http://forthebadge.com) [![forinfinityandbyond](https://user-images.githubusercontent.com/5211576/29499758-4efff304-85e6-11e7-8267-62919c3688a9.gif)](https://www.reddit.com/r/SS13/comments/5oplxp/what_is_the_main_problem_with_byond_as_an_engine/dclbu1a) [![forthebadge](http://forthebadge.com/images/badges/built-with-love.svg)](http://forthebadge.com)
 
-This is a toolset to manage production BYOND servers. It includes the ability to update the server without having to stop or shutdown the server (the update will take effect on a "reboot" of the server), the ability to start the server and restart it if it crashes, as well as systems for managing code and game files, and locally merging GitHub Pull Requests for test deployments.
+This is a toolset to manage production DreamMaker servers. It includes the ability to update the server without having to stop or shutdown the server (the update will take effect on a "reboot" of the server), the ability to start the server and restart it if it crashes, as well as systems for managing code and game files, and locally merging GitHub Pull Requests for test deployments.
 
 ## Setup
 
 ### Pre-Requisites
 
-_Note: If you opt to use the Windows installer, all pre-requisites for running BYOND servers (including MariaDB) are provided out of the box. If you wish to use OpenDream you will need to install the required dotnet SDK manually._
+_Note: If you opt to use the Windows installer, most pre-requisites for running BYOND servers (including MariaDB) are provided out of the box._
+
+_If you are running on a Windows Server OS. You **might** need to install the [x86 Visual C++ 2015 Runtime](https://aka.ms/vs/17/release/vc_redist.x86.exe) to run BYOND._
+
+_If you wish to use OpenDream you will need to install the required dotnet SDK manually._
 
 tgstation-server needs a relational database to store it's data.
 
@@ -129,6 +137,31 @@ sudo dpkg --add-architecture i386 \
 
 The service will execute as the newly created user: `tgstation-server`. You should, ideally, store your instances somewhere under `/home/tgstation-server`.
 
+##### Nix Flake
+
+TGS supports being setup on Nix starting with version 6.12.0. Add the [flake](./build/package/nix/flake.nix) to your own system by adding the following code to your flake inputs.
+```nix
+    tgstation-server = {
+      url = "github:tgstation/tgstation-server/tgstation-server-v${version}?dir=build/package/nix";
+    };
+```
+
+Where `version` is the latest major TGS version you wish to use.
+
+Note that changing this version does not change the core version of TGS used after the first launch. Instead, have TGS self-update via its API.
+
+For maximum game server uptime, do NOT modify this version unless you are doing a major TGS version update in which case it is a requirement.
+
+Configure TGS by setting up its service definition:
+```nix
+  services.tgstation-server = {
+    enable = true;
+    production-appsettings = (builtins.readFile ./path/to/your/appsettings.Production.yml);
+  };
+```
+
+Refer to [tgstation-server.nix](./build/package/nix/tgstation-server.nix) for the full list of available configuration options.
+
 ##### Manual Setup
 
 The following dependencies are required.
@@ -157,6 +190,7 @@ docker run \
 	--network="host" \ # Not recommended, eases networking setup if your sql server is on the same machine
 	--name="tgs" \ # Name for the container
 	--cap-add=sys_nice \ # Recommended, allows TGS to lower the niceness of child processes if it sees fit
+	--cap-add=sys_resource \ # Recommended, allows TGS to not be killed by the OOM killer before its child processes
 	--init \ #Highly recommended, reaps potential zombie processes
 	-p 5000:5000 \ # Port bridge for accessing TGS, you can change this if you need
 	-p 0.0.0.0:<public game port>:<public game port> \ # Port bridge for accessing DreamDaemon
@@ -230,9 +264,11 @@ Create an `appsettings.Production.yml` file next to `appsettings.yml`. This will
 
 - `General:InstanceLimit`: Maximum number of instances that may be created
 
-- `General:GitHubAccessToken`: Specify a GitHub personal access token with no scopes here to highly mitigate the possiblity of 429 response codes from GitHub requests
+- `General:GitHubAccessToken`: Specify a classic GitHub personal access token with no scopes here to highly mitigate the possiblity of 429 response codes from GitHub requests
 
 - `General:SkipAddingByondFirewallException`: Set to `true` if you have Windows firewall disabled
+
+- `General:AdditionalEventScriptsDirectories`: An array of directories that are considered to contain EventScripts alongside instance directories. Working directory for executed scripts will remain the instance EventScripts directory.
 
 - `Session:HighPriorityLiveDreamDaemon`: Boolean controlling if live DreamDaemon instances get set to above normal priority processes.
 
@@ -241,6 +277,8 @@ Create an `appsettings.Production.yml` file next to `appsettings.yml`. This will
 - `FileLogging:Directory`: Override the default directory where server logs are stored. Default is `C:/ProgramData/tgstation-server/logs` on Windows, `/usr/share/tgstation-server/logs` otherwise
 
 - `FileLogging:LogLevel`: Can be one of `Trace`, `Debug`, `Information`, `Warning`, `Error`, or `Critical`. Restricts what is put into the log files. Currently `Debug` is reccommended for help with error reporting.
+
+- `FileLogging:ProviderNetworkDebug`: Boolean controlling whether or not Chat bot providers should log their raw network traffic. Currently only applies to IrcProvider.
 
 - `Kestrel:Endpoints:Http:Url`: The URL (i.e. interface and ports) your application should listen on. General use case should be `http://localhost:<port>` for restricted local connections. See the Remote Access section for configuring public access to the World Wide Web. This doesn't need to be changed using the docker setup and should be mapped with the `-p` option instead
 
@@ -281,7 +319,7 @@ Create an `appsettings.Production.yml` file next to `appsettings.yml`. This will
 
 - `Swarm:UpdateRequiredNodeCount`: Should be set to the total number of servers in your swarm minus 1. Prevents updates from occurring unless the non-controller server count in the swarm is greater than or equal to this value.
 
-- `Security:OAuth:<Provider Name>`: Sets the OAuth client ID and secret for a given `<Provider Name>`. The currently supported providers are `Keycloak`, `GitHub`, `Discord`, `InvisionCommunity` and `TGForums`. Setting these fields to `null` disables logins with the provider, but does not stop users from associating their accounts using the API. Sample Entry:
+- `Security:OAuth:<Provider Name>`: Sets the OAuth client ID and secret for a given `<Provider Name>`. The currently supported providers are `Keycloak`, `GitHub`, `Discord`, `InvisionCommunity` and `TGForums`. Setting these fields to `null` disables logins AND gateway auth with the provider, but does not stop users from associating their accounts using the API. Sample Entry:
 ```yml
 Security:
   OAuth:
@@ -290,6 +328,7 @@ Security:
       ClientSecret: "..."
       RedirectUrl: "..."
       ServerUrl: "..."
+	  Gateway: Disabled # Can be one of `Disabled` disallowing gateway auth (default), `Enabled` allowing gateway auth, or `Only` allowing gateway auth and disabling OAuth logins with this provider
       UserInformationUrlOverride: "..." # For power users, leave out of configuration for most cases. Not supported by GitHub provider.
 ```
 The following providers use the `RedirectUrl` setting:
@@ -303,6 +342,14 @@ The following providers use the `ServerUrl` setting:
 
 - Keycloak
 - InvisionCommunity
+
+Gateway auth simply allows the users to authenticate with the service using the configuration you provide and have their impersonation token passed back to the client. An example of this is using GitHub gateway auth to allow clients to enumerate pull requests without getting rate limited.
+
+- `Telemetry:DisableVersionReporting`: Prevents you installation and the version you're using from being reported on the source repository's deployments list
+
+- `Telemetry:ServerFriendlyName`: Prevents anonymous TGS version usage statistics from being sent to be displayed on the repository.
+
+- `Telemetry:VersionReportingRepositoryId`: The repository telemetry is sent to. For security reasons, this is not the main TGS repo. See the [tgstation-server-deployments](https://github.com/tgstation/tgstation-server-deployments) repository for more information.
 
 ### Database Configuration
 
@@ -407,15 +454,15 @@ _NOTE: Your reverse proxy setup may interfere with SSE (Server-Sent Events) whic
 #### IIS (Reccommended for Windows)
 
 1. Acquire an HTTPS certificate. The easiet free way for Windows is [win-acme](https://github.com/PKISharp/win-acme) (requires you to set up the website first)
-2. Install the [Web Platform Installer](https://www.microsoft.com/web/downloads/platform.aspx)
-3. Open the web platform installer in the IIS Manager and install the Application Request Routing 3.0 module
-4. Create a new website, bind it to HTTPS only with your chosen certificate and exposed port. The physical path won't matter since it won't be used. Use `Require Server Name Indication` if you want to limit requests to a specific URL prefix. Do not use the same port as the one TGS is running on.
-5. Close and reopen the IIS Manager
-5. Open the site and navigate to the `URL Rewrite` module
-6. In the `Actions` Pane on the right click `Add Rule(s)...`
-7. For the rule template, select `Reverse Proxy` under `Inbound and Outbound Rules` and click `OK`
-8. You may get a prompt about enabling proxy functionality. Click `OK`
-9. In the window that appears set the `Inbound Rules` textbox to the URL of your tgstation-server i.e. `http://localhost:5000`. Ensure `Enable SSL Offloading` is checked, then click `OK`
+1. Install the [URL Rewrite Module](https://www.iis.net/downloads/microsoft/url-rewrite)
+1. Install the [Application Request Routing Module](https://www.iis.net/downloads/microsoft/application-request-routing)
+1. Create a new website, bind it to HTTPS only with your chosen certificate and exposed port. The physical path won't matter since it won't be used. Use `Require Server Name Indication` if you want to limit requests to a specific URL prefix. Do not use the same port as the one TGS is running on.
+1. Close and reopen the IIS Manager
+1. Open the site and navigate to the `URL Rewrite` module
+1. In the `Actions` Pane on the right click `Add Rule(s)...`
+1. For the rule template, select `Reverse Proxy` under `Inbound and Outbound Rules` and click `OK`
+1. You may get a prompt about enabling proxy functionality. Click `OK`
+1. In the window that appears set the `Inbound Rules` textbox to the URL of your tgstation-server i.e. `localhost:5000`. Ensure `Enable SSL Offloading` is checked, then click `OK`
 
 #### Caddy (Reccommended for Linux, or those unfamilar with configuring NGINX or Apache)
 
@@ -533,7 +580,7 @@ All users with access to an instance have an InstanceUser object associated with
 
 The `Repository` folder is a git repository containing the code of the game you wish to host. It can be cloned from any public or private remote repository and has capabilities to affect changes back to it. All the standard benefits of git are utilized (i.e. check out any revision or reference).
 
-Additional features become available if the remote repository is hosted on https://github.com/. Namely the Test Merge feature, which allows you to take a pull request opened on the repository and compile it into a game deployment for testing. Information about test merges is available in game via the DMAPI and via the main API as well.
+Additional features become available if the remote repository is hosted on https://github.com/. Namely the Test Merge feature, which allows you to take a pull request opened on the repository and compile it into a game deployment for testing. Information about test merges is available in game via the DMAPI and via the main API as well. These require a valid personal access token with `repo` scope or an installed GitHub App with the following permissions: `contents: write`, `pull_requests: write`, and `deployments: write`.
 
 Manual operations on the repository while an instance is running may lead to git data corruption. Thankfully, it's simple enough to delete and reclone the repository via the API.
 
@@ -620,7 +667,7 @@ This functionality has the following prerequisites:
 Here are tools for interacting with the TGS web API
 
 - [tgstation-server-webpanel](https://github.com/tgstation/tgstation-server-webpanel): Official client and included with the server. A react web app for using tgstation-server.
-- [Tgstation.Server.ControlPanel](https://github.com/tgstation/Tgstation.Server.ControlPanel): Official client. A cross platform GUI for using tgstation-server. Feature complete but lacks OAuth login options.
+- [Tgstation.Server.ControlPanel](https://github.com/tgstation/Tgstation.Server.ControlPanel): Deprecated client. A cross platform GUI for using tgstation-server.
 - [Tgstation.Server.Client](https://www.nuget.org/packages/Tgstation.Server.Client): A nuget .NET Standard 2.0 TAP based library for communicating with tgstation-server. Feature complete.
 - [Tgstation.Server.Api](https://www.nuget.org/packages/Tgstation.Server.Api): A nuget .NET Standard 2.0 library containing API definitions for tgstation-server. Feature complete.
 

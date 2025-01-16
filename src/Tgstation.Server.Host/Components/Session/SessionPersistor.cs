@@ -11,8 +11,6 @@ using Tgstation.Server.Host.Database;
 using Tgstation.Server.Host.Models;
 using Tgstation.Server.Host.System;
 
-using Z.EntityFramework.Plus;
-
 namespace Tgstation.Server.Host.Components.Session
 {
 	/// <inheritdoc />
@@ -208,7 +206,7 @@ namespace Tgstation.Server.Host.Components.Session
 				return null;
 			}
 
-			var dmb = await dmbFactory.FromCompileJob(result!.CompileJob!, cancellationToken);
+			var dmb = await dmbFactory.FromCompileJob(result!.CompileJob!, "Session Loading Main Deployment", cancellationToken);
 			if (dmb == null)
 			{
 				logger.LogError("Unable to reattach! Could not load .dmb!");
@@ -221,7 +219,7 @@ namespace Tgstation.Server.Host.Components.Session
 						.ReattachInformations
 						.AsQueryable()
 						.Where(x => x.Id == result.Id)
-						.DeleteAsync(cancellationToken);
+						.ExecuteDeleteAsync(cancellationToken);
 				});
 				return null;
 			}
@@ -230,7 +228,7 @@ namespace Tgstation.Server.Host.Components.Session
 			if (result.InitialCompileJob != null)
 			{
 				logger.LogTrace("Loading initial compile job...");
-				initialDmb = await dmbFactory.FromCompileJob(result.InitialCompileJob, cancellationToken);
+				initialDmb = await dmbFactory.FromCompileJob(result.InitialCompileJob, "Session Loading Initial Deployment", cancellationToken);
 			}
 
 			logger.LogTrace("Retrieved ReattachInformation");
@@ -271,7 +269,7 @@ namespace Tgstation.Server.Host.Components.Session
 
 			if (instant)
 				await baseQuery
-					.DeleteAsync(cancellationToken);
+					.ExecuteDeleteAsync(cancellationToken);
 			else
 			{
 				var results = await baseQuery.ToListAsync(cancellationToken);

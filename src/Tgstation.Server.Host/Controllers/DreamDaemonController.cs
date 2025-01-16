@@ -211,6 +211,7 @@ namespace Tgstation.Server.Host.Controllers
 			if (CheckModified(x => x.AllowWebClient, DreamDaemonRights.SetWebClient)
 				|| CheckModified(x => x.AutoStart, DreamDaemonRights.SetAutoStart)
 				|| CheckModified(x => x.Port, DreamDaemonRights.SetPort)
+				|| CheckModified(x => x.OpenDreamTopicPort, DreamDaemonRights.SetPort)
 				|| CheckModified(x => x.SecurityLevel, DreamDaemonRights.SetSecurity)
 				|| CheckModified(x => x.Visibility, DreamDaemonRights.SetVisibility)
 				|| (model.SoftRestart.HasValue && !ddRights.HasFlag(DreamDaemonRights.SoftRestart))
@@ -316,11 +317,12 @@ namespace Tgstation.Server.Host.Controllers
 		/// <param name="knownForcedReboot">If there was a settings change made that forced a switch to <see cref="RebootState.Restart"/>.</param>
 		/// <param name="cancellationToken">The <see cref="CancellationToken"/> for the operation.</param>
 		/// <returns>A <see cref="ValueTask{TResult}"/> resulting in the <see cref="IActionResult"/> of the operation.</returns>
+#pragma warning disable CA1502 // TODO: Decomplexify
 		ValueTask<IActionResult> ReadImpl(DreamDaemonSettings? settings, bool knownForcedReboot, CancellationToken cancellationToken)
+#pragma warning restore CA1502
 			=> WithComponentInstance(async instance =>
 			{
 				var dd = instance.Watchdog;
-
 				var metadata = (AuthenticationContext.GetRight(RightsType.DreamDaemon) & (ulong)DreamDaemonRights.ReadMetadata) != 0;
 				var revision = (AuthenticationContext.GetRight(RightsType.DreamDaemon) & (ulong)DreamDaemonRights.ReadRevision) != 0;
 
@@ -344,10 +346,12 @@ namespace Tgstation.Server.Host.Controllers
 					var rstate = dd.RebootState;
 					result.AutoStart = settings.AutoStart!.Value;
 					result.CurrentPort = llp?.Port!.Value;
+					result.CurrentTopicPort = llp?.OpenDreamTopicPort;
 					result.CurrentSecurity = llp?.SecurityLevel!.Value;
 					result.CurrentVisibility = llp?.Visibility!.Value;
 					result.CurrentAllowWebclient = llp?.AllowWebClient!.Value;
 					result.Port = settings.Port!.Value;
+					result.OpenDreamTopicPort = settings.OpenDreamTopicPort;
 					result.AllowWebClient = settings.AllowWebClient!.Value;
 
 					var firstIteration = true;
@@ -362,6 +366,8 @@ namespace Tgstation.Server.Host.Controllers
 						firstIteration = false;
 						result.Status = dd.Status;
 						result.SessionId = dd.SessionId;
+						result.LaunchTime = dd.LaunchTime;
+						result.ClientCount = dd.ClientCount;
 					}
 					while (result.Status == WatchdogStatus.Online && !result.SessionId.HasValue); // this is the one invalid combo, it's not that racy
 
@@ -369,6 +375,7 @@ namespace Tgstation.Server.Host.Controllers
 					result.Visibility = settings.Visibility!.Value;
 					result.SoftRestart = rstate == RebootState.Restart;
 					result.SoftShutdown = rstate == RebootState.Shutdown;
+					result.ImmediateMemoryUsage = dd.MemoryUsage;
 
 					if (rstate == RebootState.Normal && knownForcedReboot)
 						result.SoftRestart = true;
@@ -386,7 +393,7 @@ namespace Tgstation.Server.Host.Controllers
 
 				if (revision)
 				{
-					var latestCompileJob = instance.LatestCompileJob();
+					var latestCompileJob = await instance.LatestCompileJob();
 					result.ActiveCompileJob = ((instance.Watchdog.Status != WatchdogStatus.Offline
 						? dd.ActiveCompileJob
 						: latestCompileJob) ?? latestCompileJob)

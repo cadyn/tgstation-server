@@ -3,7 +3,7 @@
 General:
 # ConfigVersion: # Basic semver. Differs from TGS version to version. See changelog for current version
   MinimumPasswordLength: 15 # Minimum TGS user password length
-  GitHubAccessToken: # GitHub personal access token with no scopes used to bypass rate-limits
+  GitHubAccessToken: # A classic GitHub personal access token with no scopes used to bypass rate-limits
   SetupWizardMode: AutoDetect # If the interactive TGS setup wizard should run
   ByondTopicTimeout: 5000 # Timeout for BYOND /world/Topic() calls in milliseconds
   RestartTimeoutMinutes: 1 # Timeout for server restarts after requested by SIGTERM or the HTTP API
@@ -13,16 +13,18 @@ General:
   UserGroupLimit: 25 # Maximum number of allowed groups
   InstanceLimit: 10 # Maximum number of allowed instances
   ValidInstancePaths: # An array of directories instances may be created in (either directly or as a subdirectory). null removes the restriction
-  HostApiDocumentation: false # Make HTTP API documentation available at /api/doc/tgs_api.json
+  HostApiDocumentation: false # Make HTTP API documentation available at /api/doc/tgs_api.json and /api/graphql
   SkipAddingByondFirewallException: false # Windows Only: Prevent running netsh.exe to add a firewall exception for installed engine binaries
   DeploymentDirectoryCopyTasksPerCore: 100 # Maximum number of concurrent file copy operations PER available CPU core
   OpenDreamGitUrl: https://github.com/OpenDreamProject/OpenDream # The repository to retrieve OpenDream from
   OpenDreamGitTagPrefix: v # The prefix to the OpenDream semver as tags appear in the git repository
   OpenDreamSuppressInstallOutput: false # Suppress the dotnet output of creating an OpenDream installation. Known to cause hangs in CI.
+  AdditionalEventScriptsDirectories: # An array of directories that are considered to contain EventScripts alongside instance directories. Working directory for exectued scripts will remain the instance EventScripts directory.
 Session:
   HighPriorityLiveDreamDaemon: false # If DreamDaemon instances should run as higher priority processes
   LowPriorityDeploymentProcesses: true # If TGS Deployments should run as lower priority processes
   DelayCleaningFailedDeployments: false # If true, deployments that fail will not be immediately cleaned up. They will be cleaned up the next time the instance is onlined
+  ForceUseDreamDaemonExe: false # If true, dd.exe will not be used on Windows systems in versions where it is present. Instead dreamdaemon.exe will always be used.
 FileLogging:
   Directory: # Directory in which log files are stored. Windows default: %PROGRAMDATA%/tgstation-server. Linux default: /var/log/tgstation-server
   Disable: true # Disable file logging entirely
@@ -39,7 +41,7 @@ Logging:
       Microsoft: Warning # Level of stdout verbosity from Microsoft dependecies (i.e. webserver, database object relational mapper, etc...). Can be one of Trace, Debug, Information, Warning, Error, or Critical
 ControlPanel:
   Enable: false # If the web control panel is hosted alongside the server
-  Channel: https://tgstation.github.io/tgstation-server-webpanel/api/${Major}.${Minor}.${Patch} # Channel for live web control panel updates. The tokens ${Major}, ${Minor}, and ${Patch} are substituted for the version of the HTTP API TGS was built with
+  Channel: https://tgstation.github.io/tgstation-server-webpanel/api/${Major}.${Minor}.${Patch} # Channel for live web control panel updates. The tokens ${Major}, ${Minor}, and ${Patch} are substituted for the version of the REST API TGS was built with
   AllowAnyOrigin: false # Enable the `Access-Control-Allow-Origin: *` header for HTTP responses
   AllowedOrigins: [] # Explict list of origins for `Access-Control-Allow-Origin:` HTTP header. Ignored if AllowAnyOrigin is true
   PublicPath: # Used if TGS is not hosted at the website root. If TGS is hosted under `https://domain.com/tgs`, this should be `/tgs`
@@ -64,6 +66,7 @@ Security:
 #     ClientId: # OAuth client ID
 #     ClientSecret: # OAuth client secret
 #     ServerUrl: # Only used by Keycloak and InvisionCommunity. Server URL (Includes Keycloak realm)
+#     Gateway: # Can be one of `Disabled` disallowing gateway auth (default), `Enabled` allowing gateway auth, or `Only` allowing gateway auth and disabling OAuth logins with this provider
 #     UserInformationUrlOverride: # Not supported by GitHub. Overrides the URL TGS uses to retrieve a user's information
     GitHub: # https://github.com OAuth configuration
     Discord: # https://discord.com OAuth configuration
@@ -77,3 +80,7 @@ Swarm: # Should be left empty if using swarm mode is not desired
 # PublicAddress: # The public address of the swarm node
 # ControllerAddress: # Required on non-controller nodes. The internal address of the swarm controller's API'. Should be left empty on the controller itself
 # UpdateRequiredNodeCount: # The number of nodes expected to be in the swarm before initiating an update. This should count every server irrespective of whether or not they are the controller MINUS 1
+Telemetry:
+  DisableVersionReporting: false # Prevents you installation and the version you're using from being reported on the source repository's deployments list
+  ServerFriendlyName: null # Sets a friendly name for your server in reported telemetry. Must be unique. First come first serve
+  VersionReportingRepositoryId: 841149827 # GitHub repostiory ID where the tgs_version_telemetry workflow can be found
